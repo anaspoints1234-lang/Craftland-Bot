@@ -38,7 +38,7 @@ def create_rating_markup():
 
 
 # ==========================================
-# 1. الترحيب الأسطوري بالأعضاء الجدد (شكل هندسي جديد)
+# 1. الترحيب الأسطوري بالأعضاء الجدد
 # ==========================================
 @bot.message_handler(content_types=["new_chat_members"])
 def welcome_new_member(message):
@@ -100,7 +100,7 @@ def send_rules(message):
         f"╭─── 📜 <b>قَوَانِينُ المَجْمُوعَةِ</b> ───╮\n"
         f"│\n"
         f"│ 🚫 يمنع نشر الروابط الخارجية المخالفة.\n"
-        f"│ 🚫 يمنع السبام والتكرار (يعاقب بالميوت).\n"
+        f"│ 🚫 يمنع سبام تكرار نفس الرسالة (يعاقب بالميوت).\n"
         f"│ 🤝 احترام جميع الأعضاء وصناع الخرائط.\n"
         f"│ 🎮 الالتزام بنشر خرائط Free Fire فقط.\n"
         f"│\n"
@@ -134,7 +134,7 @@ def callback_guide(call):
 
 
 # ==========================================
-# 3. نظام الحماية الذكي
+# 3. نظام الحماية الذكي (روابط + سبام نفس الرسالة 4 مرات في 15 ثانية)
 # ==========================================
 def check_security(message):
     if not message.from_user or message.chat.type == 'private':
@@ -167,49 +167,58 @@ def check_security(message):
                     bot.restrict_chat_member(chat_id, user_id, until_date=int(now + 600), permissions=ChatPermissions(can_send_messages=False))
                     warn = bot.send_message(chat_id, f"🚫 تم كتم العضو {message.from_user.first_name} لمدة 10 دقائق لتكراره إرسال روابط مخالفة!", parse_mode="HTML")
                     threading.Timer(10.0, delete_message_safe, args=(chat_id, warn.message_id)).start()
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"Error Muting (Links): {e}")
             else:
                 try:
                     bot.restrict_chat_member(chat_id, user_id, until_date=0, permissions=ChatPermissions(can_send_messages=False))
                     warn = bot.send_message(chat_id, f"⛔ تم كتم العضو {message.from_user.first_name} **مدى الحياة** لتكراره إرسال الروابط المخالفة!", parse_mode="HTML")
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"Error Banning (Links): {e}")
             return True
 
-    # نظام السبايم والتكرار
+    # نظام السبام: تكرار "نفس الرسالة" 4 مرات في مدة 15 ثانية
     now = datetime.now().timestamp()
     if user_id not in user_spam_tracker:
-        user_spam_tracker[user_id] = {'text': text_content, 'count': 1, 'time': now}
-        return False
+        user_spam_tracker[user_id] = {}
     
-    data = user_spam_tracker[user_id]
-    if data['text'] == text_content and (now - data['time']) < 10:
-        data['count'] += 1
-        data['time'] = now
-        
-        if data['count'] >= 5:
-            try:
-                delete_message_safe(chat_id, message.message_id)
-                bot.restrict_chat_member(
-                    chat_id, 
-                    user_id, 
-                    until_date=int(now + 60),
-                    permissions=ChatPermissions(can_send_messages=False)
-                )
-                warning_msg = bot.send_message(
-                    chat_id, 
-                    f"⚠️ <b>تنبيه سبام!</b> تم كتم العضو {message.from_user.first_name} دقيقة واحدة.",
-                    parse_mode="HTML"
-                )
-                threading.Timer(10.0, delete_message_safe, args=(chat_id, warning_msg.message_id)).start()
-            except Exception:
-                pass
-                
-            user_spam_tracker[user_id] = {'text': "", 'count': 0, 'time': now}
-            return True
-    else:
-        user_spam_tracker[user_id] = {'text': text_content, 'count': 1, 'time': now}
+    user_data = user_spam_tracker[user_id]
+    
+    # إذا كانت رسالة فارغة (بدون نص/كابتشن) نتخطى فحص تكرار النص
+    if not text_content.strip():
+        return False
+
+    if text_content not in user_data:
+        user_data[text_content] = []
+    
+    # تنظيف الأوقات القديمة التي مر عليها أكثر من 15 ثانية لهذه الرسالة بالذات
+    user_data[text_content] = [t for t in user_data[text_content] if (now - t) < 15.0]
+    
+    # تسجيل وقت إرسال هذه الرسالة
+    user_data[text_content].append(now)
+    
+    # إذا تكررت نفس الرسالة 4 مرات أو أكثر في آخر 15 ثانية
+    if len(user_data[text_content]) >= 4:
+        try:
+            delete_message_safe(chat_id, message.message_id)
+            bot.restrict_chat_member(
+                chat_id, 
+                user_id, 
+                until_date=int(now + 60),
+                permissions=ChatPermissions(can_send_messages=False)
+            )
+            warning_msg = bot.send_message(
+                chat_id, 
+                f"⚠️ <b>تنبيه سبام!</b> تم كتم العضو {message.from_user.first_name} لمدة دقيقة واحدة لتكراره نفس الرسالة عدة مرات.",
+                parse_mode="HTML"
+            )
+            threading.Timer(10.0, delete_message_safe, args=(chat_id, warning_msg.message_id)).start()
+        except Exception as e:
+            print(f"Error Muting (Spam): {e}")
+            
+        # تصفير السجل لهذا النص بعد الميوت
+        user_data[text_content] = []
+        return True
         
     return False
 
@@ -249,7 +258,6 @@ def process_media_group(mg_id):
     if not match: return
 
     map_type = html.escape(match.group(1).strip())
-    # استخراج الوصف والكود بالكامل مع الحفاظ على الفواصل الأصلية
     description_and_code = html.escape(caption.replace(f"[{match.group(1)}]", "").strip())
     
     creator_name = html.escape(messages[0].from_user.first_name)
@@ -302,7 +310,6 @@ def process_single_map(message):
     if not match: return
 
     map_type = html.escape(match.group(1).strip())
-    # استخراج الوصف والكود بالكامل مع الحفاظ على الفواصل الأصلية
     description_and_code = html.escape(caption.replace(f"[{match.group(1)}]", "").strip())
     
     creator_name = html.escape(message.from_user.first_name)
@@ -375,7 +382,7 @@ def handle_rating(call):
             )
         bot.answer_callback_query(call.id, f"✅ تم حفظ تقييمك: {rating_val} نجوم")
     except Exception:
-        bot.answer_callback_query(call.id, "✅ تم الحفظ!")
+        bot.answer_callback_query(call.id, f"✅ تم الحفظ!")
 
 
 print("⚡ البوت المطور بالتصميم الاحترافي يعمل الآن...")
