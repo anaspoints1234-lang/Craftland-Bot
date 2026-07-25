@@ -45,7 +45,7 @@ def create_main_menu_markup():
         InlineKeyboardButton("📜 قوانين المجموعة", callback_data="menu_rules"),
         InlineKeyboardButton("📌 طريقة النشر", callback_data="menu_guide"),
         InlineKeyboardButton("📊 إحصائيات البوت", callback_data="menu_stats"),
-        InlineKeyboardButton("🛡️ دعم المجموعة", url="https://t.me/YourSupportUsername")
+        InlineKeyboardButton("🛡️ دعم المجموعة", url="@an_as1209")
     )
     return markup
 
