@@ -54,7 +54,7 @@ def create_main_menu_markup():
         InlineKeyboardButton("📜 القوانين", callback_data="menu_rules"),
         InlineKeyboardButton("🏆 أفضل اللاعبين", callback_data="menu_top"),
         InlineKeyboardButton("🔥 آخر التسريبات", callback_data="menu_news"),
-        InlineKeyboardButton("🛡️ الدعم", url="https://t.me/YourSupportUsername")
+        InlineKeyboardButton("🛡️ الدعم", url="https://t.me/an_as1209")
     )
     return markup
 
