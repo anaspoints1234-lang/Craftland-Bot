@@ -25,7 +25,6 @@ saved_leaks = []  # قائمة لحفظ التسريبات المتعددة
 last_owner_leak_date = None # تتبع تاريخ آخر تسريب للمالك
 
 # قواعد بيانات التتبع والسبام
-group_messages = {} # حفظ آيديات الرسائل لحذفها عند 30
 user_cooldowns = {} # وقت آخر رسالة للعضو (للـ 5 ثواني)
 username_cache = {} # حفظ المعرفات لتسهيل أمر unmute
 
@@ -123,27 +122,6 @@ class BotMiddleware(BaseMiddleware):
                     delete_message_safe(chat_id, message.message_id)
                     return CancelUpdate()
                 user_cooldowns[user_id] = now
-            
-            # 2. نظام حذف 30 رسالة التلقائي
-            if chat_id not in group_messages: group_messages[chat_id] = []
-            group_messages[chat_id].append(message.message_id)
-
-            if len(group_messages[chat_id]) >= 30:
-                pinned_id = None
-                try:
-                    c = bot.get_chat(chat_id)
-                    if c.pinned_message: pinned_id = c.pinned_message.message_id
-                except: pass
-                
-                # حذف الكل إلا المثبت
-                to_delete = [m_id for m_id in group_messages[chat_id] if m_id != pinned_id]
-                
-                # تقسيم الحذف لعدم تجاوز حد التليجرام
-                for i in range(0, len(to_delete), 100):
-                    try: bot.delete_messages(chat_id, to_delete[i:i+100])
-                    except: pass
-                
-                group_messages[chat_id] = [pinned_id] if pinned_id else []
 
     def post_process(self, message, data, exception):
         pass
@@ -186,7 +164,7 @@ def filter_bad_words(message):
             send_and_schedule(chat_id, f"🔒 <b>تـم كـتـم الـعـضـو مـدى الـحـيـاة !</b>\n\n👤 العضو: <b>{user_name}</b>\n❌ تم إسكاتك نهائياً.", parse_mode="HTML", reply_markup=markup)
     except: pass
 
-# ================= 2. أوامر الإدارة =================
+# ================= 2. أوامر الإدارة وتحديث /delmsg =================
 @bot.message_handler(commands=['delmsg'])
 def delete_all_messages_command(message):
     chat_id = message.chat.id
@@ -195,7 +173,8 @@ def delete_all_messages_command(message):
     if not is_admin(chat_id, user_id): 
         return
     
-    send_and_schedule(chat_id, "🧹 <b>جاري تنظيف جميع رسائل المجموعة القديمة والجديدة...</b>\nالرجاء الانتظار قليلاً.", parse_mode="HTML")
+    # إرسال رسالة التقدم وحفظ الآيدي الخاص بها لكي لا يتم مسحها
+    status_msg = bot.send_message(chat_id, "🧹 <b>جاري تنظيف رسائل المجموعة...</b>\n[░░░░░░░░░░] 0%", parse_mode="HTML")
     
     def clear_history():
         current_id = message.message_id
@@ -205,24 +184,54 @@ def delete_all_messages_command(message):
             if c.pinned_message: pinned_id = c.pinned_message.message_id
         except: pass
 
-        # يقوم بمسح أخر 3000 رسالة، ويستثني الرسالة المثبتة. (دفعات من 100 لتجنب حظر التيليجرام)
-        for start in range(current_id, max(0, current_id - 3000), -100):
-            batch = [i for i in range(start, max(0, start - 100), -1) if i != pinned_id]
+        # كمية الرسائل التي سيتم البحث عنها ومسحها
+        limit = 3000
+        start_id = current_id
+        end_id = max(0, current_id - limit)
+        total_steps = max(1, limit // 100)
+        
+        # تقسيم الحذف لدفعات من 100 رسالة
+        for step, start in enumerate(range(start_id, end_id, -100)):
+            # استثناء الرسالة المثبتة ورسالة شريط التقدم
+            batch = [i for i in range(start, max(end_id, start - 100), -1) if i != pinned_id and i != status_msg.message_id]
+            
             try:
+                # محاولة مسح الدفعة كاملة (وهذا يتطلب صلاحية مسح الرسائل للبوت)
                 bot.delete_messages(chat_id, batch)
             except:
-                # إذا فشل الحذف بالجملة (للرسائل القديمة جداً)، يتم حذفها بشكل فردي
+                # إذا فشل المسح الجماعي، يتم مسحها واحدة تلو الأخرى
                 for m_id in batch:
                     try: bot.delete_message(chat_id, m_id)
                     except: pass
-                    
-        # إعادة تصفير عداد الـ 30 رسالة
-        if chat_id in group_messages:
-            group_messages[chat_id] = [pinned_id] if pinned_id else []
             
-        send_and_schedule(chat_id, "✅ <b>تم تنظيف المجموعة بالكامل بنجاح!</b>", parse_mode="HTML")
+            # تحديث شريط التقدم كل 10%
+            progress = int((step / total_steps) * 100)
+            if progress % 10 == 0 or progress == 100:
+                filled = progress // 10
+                empty = 10 - filled
+                bar = "▓" * filled + "░" * empty
+                try:
+                    bot.edit_message_text(
+                        f"🧹 <b>جاري تنظيف رسائل المجموعة...</b>\n[{bar}] {progress}%", 
+                        chat_id, 
+                        status_msg.message_id, 
+                        parse_mode="HTML"
+                    )
+                except: pass
+                
+        # إكمال شريط التقدم وإنهاء العملية
+        try:
+            bot.edit_message_text(
+                "✅ <b>تم تنظيف المجموعة بالكامل بنجاح!</b>\n[▓▓▓▓▓▓▓▓▓▓] 100%", 
+                chat_id, 
+                status_msg.message_id, 
+                parse_mode="HTML"
+            )
+            # مسح رسالة إشعار النجاح بعد دقيقة
+            threading.Timer(60.0, delete_message_safe, args=(chat_id, status_msg.message_id)).start()
+        except: pass
 
-    # استخدام Thread حتى لا يعلق البوت أثناء المسح
+    # استخدام Thread حتى لا يتوقف البوت أثناء المسح
     threading.Thread(target=clear_history).start()
 
 
@@ -243,7 +252,8 @@ def owner_unmute_command(message):
     if not target_id: return send_and_schedule(chat_id, "❌ لم أتمكن من التعرف على هذا العضو. تأكد من الرد عليه أو كتابة الآيدي/المعرف الصحيح.")
 
     try:
-        target_chat_id = chat_id if message.chat.type != 'private' else group_messages.keys()[0] if group_messages else -1
+        # البحث عن أيدي الجروب إذا تم إرساله في الخاص
+        target_chat_id = chat_id if message.chat.type != 'private' else -1007454358135
         bot.restrict_chat_member(target_chat_id, target_id, permissions=ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True))
         if target_id in user_violations: user_violations[target_id] = 0
         owner_name = html.escape(message.from_user.first_name)
@@ -457,5 +467,5 @@ def handle_callbacks(call):
             bot.answer_callback_query(call.id, f"✅ تم حفظ تقييمك: {rating_val} نجوم")
         except: pass
 
-print("⚡ البوت المتطور يعمل الآن بميزات (المسح 30 رسالة / تنظيف شامل / الميوت والسبام)...")
+print("⚡ البوت المتطور يعمل الآن بميزات (المسح بالشريط / بدون حذف عند 30 / حذف للجميع)...")
 bot.infinity_polling()
