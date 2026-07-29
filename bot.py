@@ -44,7 +44,6 @@ def delete_message_safe(chat_id, message_id):
         pass
 
 def send_self_destruct_message(chat_id, text, parse_mode=None, reply_markup=None):
-    """دالة لرسائل البوت التي تختفي تلقائياً بعد 3 دقائق (180 ثانية) لتنظيف المجموعة"""
     try:
         msg = bot.send_message(chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup)
         threading.Timer(180.0, delete_message_safe, args=(chat_id, msg.message_id)).start()
@@ -53,7 +52,6 @@ def send_self_destruct_message(chat_id, text, parse_mode=None, reply_markup=None
         return None
 
 def send_self_destruct_photo(chat_id, photo, caption=None, parse_mode=None, reply_markup=None):
-    """دالة لصور البوت التي تختفي تلقائياً بعد 3 دقائق (180 ثانية)"""
     try:
         msg = bot.send_photo(chat_id, photo, caption=caption, parse_mode=parse_mode, reply_markup=reply_markup)
         threading.Timer(180.0, delete_message_safe, args=(chat_id, msg.message_id)).start()
@@ -98,28 +96,23 @@ def create_main_menu():
     )
     return markup
 
-def create_admin_menu():
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("🏆 إنشاء بطولة", callback_data="admin_tour"),
-        InlineKeyboardButton("🗑️ حذف الرسالة", callback_data="admin_delete")
-    )
-    return markup
-
-# ================= مراقب الرسائل الشامل (حذف 1000 رسالة + Cooldown + السبام + الخرائط) =================
+# ================= مراقب الرسائل الشامل (مع استثناء الأوامر تماماً لتشتغل فوراً) =================
 @bot.message_handler(func=lambda message: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'sticker', 'animation'])
 def global_message_handler(message):
     chat_id = message.chat.id
     user_id = message.from_user.id
     text = message.text or message.caption or ""
 
-    # 1. نظام حذف الرسائل عند 1000 رسالة (تجاهل المثبتة، يشمل الجميع)
-    if chat_id < 0:  # مجموعات فقط
+    # استثناء تام للأوامر كي لا تتأثر بالـ Cooldown أو الفلترة وتعمل فوراً
+    if text.strip().startswith('/'):
+        return
+
+    # 1. نظام حذف الرسائل عند 1000 رسالة (للمجموعات فقط)
+    if chat_id < 0:  
         global message_counter
         message_counter += 1
         if message_counter >= 1000:
             message_counter = 0
-            # تليجرام يحذف الرسائل عبر الـ ID تنازلياً مع استثناء المثبتة تلقائياً بالبايثون قدر الإمكان
             try:
                 for m_id in range(message.message_id - 1000, message.message_id):
                     try:
@@ -129,17 +122,17 @@ def global_message_handler(message):
             except:
                 pass
 
-    # 2. نظام الانتظار (Cooldown) لمدة 5 ثوانٍ لكل شخص (حتى المالك والأدمن أو العاديين)
+    # 2. نظام الانتظار (Cooldown) لمدة 5 ثوانٍ
     current_time = time.time()
     if user_id in user_cooldowns:
         elapsed = current_time - user_cooldowns[user_id]
         if elapsed < 5.0:
             delete_message_safe(chat_id, message.message_id)
-            return  # تجاهل الرسالة تماماً إذا لم تمر 5 ثوانٍ
+            return  
     user_cooldowns[user_id] = current_time
 
-    # 3. التحقق من الألفاظ البذيئة (فلتر السبام والشتائم)
-    if not text.strip().startswith('/') and not is_admin(chat_id, user_id):
+    # 3. التحقق من الألفاظ البذيئة
+    if chat_id < 0 and not is_admin(chat_id, user_id):
         text_lower = text.lower()
         if any(word in text_lower for word in BAD_WORDS):
             delete_message_safe(chat_id, message.message_id)
@@ -203,7 +196,6 @@ def channel_leaks_listener(message):
         latest_leak["text"] = leak_text
         news_list.append({"photo": leak_photo, "text": leak_text})
 
-        # إرسال إشعار للمالك بالآيدي الخاص بك
         try:
             channel_name = message.chat.title or "قناة التسريبات"
             bot.send_message(
@@ -226,7 +218,6 @@ def owner_unmute_command(message):
     args = message.text.split()
     target_id = None
 
-    # فك الميوت بـ 3 طرق: الرد على الرسالة، كتابة اليوزر (@username)، أو الآيدي الرقمي
     if message.reply_to_message:
         target_id = message.reply_to_message.from_user.id
     elif len(args) > 1:
@@ -314,7 +305,6 @@ def send_all_news(message):
             else:
                 msg = bot.send_message(target_chat, f"🔥 <b>تـسـريـب:</b>\n{item['text']}", parse_mode="HTML")
             
-            # تثبيت التسريبات تلقائياً كي لا تحذف بنظام التنظيف
             bot.pin_chat_message(target_chat, msg.message_id)
         except:
             pass
@@ -474,5 +464,5 @@ def handle_callbacks(call):
             pass
 
 
-print("⚡ البوت يعمل بكامل الخصائص والميزات الجديدة بنجاح...")
+print("⚡ البوت يعمل بكامل الخصائص والميزات وتم إصلاح مشكلة الأوامر بنجاح...")
 bot.infinity_polling()
