@@ -25,7 +25,7 @@ saved_leaks = []  # قائمة لحفظ التسريبات المتعددة
 last_owner_leak_date = None # تتبع تاريخ آخر تسريب للمالك
 
 # قواعد بيانات التتبع والسبام
-group_messages = {} # حفظ آيديات الرسائل لحذفها عند 1000
+group_messages = {} # حفظ آيديات الرسائل لحذفها عند 30
 user_cooldowns = {} # وقت آخر رسالة للعضو (للـ 5 ثواني)
 username_cache = {} # حفظ المعرفات لتسهيل أمر unmute
 
@@ -124,11 +124,11 @@ class BotMiddleware(BaseMiddleware):
                     return CancelUpdate()
                 user_cooldowns[user_id] = now
             
-            # 2. نظام حذف 1000 رسالة
+            # 2. نظام حذف 30 رسالة التلقائي
             if chat_id not in group_messages: group_messages[chat_id] = []
             group_messages[chat_id].append(message.message_id)
 
-            if len(group_messages[chat_id]) >= 1000:
+            if len(group_messages[chat_id]) >= 30:
                 pinned_id = None
                 try:
                     c = bot.get_chat(chat_id)
@@ -138,7 +138,7 @@ class BotMiddleware(BaseMiddleware):
                 # حذف الكل إلا المثبت
                 to_delete = [m_id for m_id in group_messages[chat_id] if m_id != pinned_id]
                 
-                # تقسيم الحذف لـ 100 رسالة لعدم تجاوز حد التليجرام
+                # تقسيم الحذف لعدم تجاوز حد التليجرام
                 for i in range(0, len(to_delete), 100):
                     try: bot.delete_messages(chat_id, to_delete[i:i+100])
                     except: pass
@@ -187,6 +187,45 @@ def filter_bad_words(message):
     except: pass
 
 # ================= 2. أوامر الإدارة =================
+@bot.message_handler(commands=['delmsg'])
+def delete_all_messages_command(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    
+    if not is_admin(chat_id, user_id): 
+        return
+    
+    send_and_schedule(chat_id, "🧹 <b>جاري تنظيف جميع رسائل المجموعة القديمة والجديدة...</b>\nالرجاء الانتظار قليلاً.", parse_mode="HTML")
+    
+    def clear_history():
+        current_id = message.message_id
+        pinned_id = None
+        try:
+            c = bot.get_chat(chat_id)
+            if c.pinned_message: pinned_id = c.pinned_message.message_id
+        except: pass
+
+        # يقوم بمسح أخر 3000 رسالة، ويستثني الرسالة المثبتة. (دفعات من 100 لتجنب حظر التيليجرام)
+        for start in range(current_id, max(0, current_id - 3000), -100):
+            batch = [i for i in range(start, max(0, start - 100), -1) if i != pinned_id]
+            try:
+                bot.delete_messages(chat_id, batch)
+            except:
+                # إذا فشل الحذف بالجملة (للرسائل القديمة جداً)، يتم حذفها بشكل فردي
+                for m_id in batch:
+                    try: bot.delete_message(chat_id, m_id)
+                    except: pass
+                    
+        # إعادة تصفير عداد الـ 30 رسالة
+        if chat_id in group_messages:
+            group_messages[chat_id] = [pinned_id] if pinned_id else []
+            
+        send_and_schedule(chat_id, "✅ <b>تم تنظيف المجموعة بالكامل بنجاح!</b>", parse_mode="HTML")
+
+    # استخدام Thread حتى لا يعلق البوت أثناء المسح
+    threading.Thread(target=clear_history).start()
+
+
 @bot.message_handler(commands=['unmute'])
 def owner_unmute_command(message):
     chat_id, user_id = message.chat.id, message.from_user.id
@@ -195,7 +234,6 @@ def owner_unmute_command(message):
     args = message.text.split()
     target_id = None
     
-    # التعرف بالرد، أو المعرف (Username)، أو الآيدي (ID)
     if message.reply_to_message:
         target_id = message.reply_to_message.from_user.id
     elif len(args) > 1:
@@ -291,7 +329,6 @@ def send_all_news(message):
                 msg = bot.send_photo(message.chat.id, leak['photo'], caption=f"🕵️‍♂️ <b>تسريب</b> 🕵️‍♂️\n\n{html.escape(leak['text'])}", parse_mode="HTML")
             else:
                 msg = bot.send_message(message.chat.id, f"🕵️‍♂️ <b>تسريب</b> 🕵️‍♂️\n\n{html.escape(leak['text'])}", parse_mode="HTML")
-            # تثبيت التسريب لكي لا يحذف
             bot.pin_chat_message(message.chat.id, msg.message_id)
         except: pass
 
@@ -301,17 +338,14 @@ def handle_craftland_map(message):
     if not message.caption: return
     caption_lower = message.caption.lower()
 
-    # إذا كان تسريب يتجاوز
     if "/setnews" in caption_lower: return set_news_command(message)
 
-    # التحقق الإجباري من وجود /map
     if "/map" not in caption_lower:
         send_and_schedule(message.chat.id, "⚠️ <b>خطأ!</b>\nلنشر خريطة، يجب أن تكتب `/map` في الوصف أولاً، ثم مسافة وتكتب الإسم والوصف والكود!", parse_mode="Markdown")
         return
 
     add_xp(message.from_user.id, message.from_user.first_name, 50)
     
-    # تنظيف النص من /map
     clean_caption = message.caption.replace("/map", "", 1).strip()
     
     map_type = "خريطة"
@@ -344,7 +378,6 @@ def handle_craftland_map(message):
     )
     
     try:
-        # إرسال الخريطة بدون حذف تلقائي (لأنها محتوى أساسي)
         sent_msg = bot.send_photo(message.chat.id, message.photo[-1].file_id, caption=base_caption + "0.0/5 (0 أصوات)", parse_mode="HTML", reply_markup=create_rating_markup())
         delete_message_safe(message.chat.id, message.message_id)
         ratings_data[sent_msg.message_id] = {"base_text": base_caption, "votes": {}, "is_caption": True}
@@ -369,7 +402,7 @@ def create_tournament(message):
         message.chat.id, 
         f"🏆 <b>تـسـجـيـل الـبـطـولـة مـفـتـوح</b> 🏆\n\n⚔️ <b>البطولة:</b> {html.escape(tour_name)}\n👥 <b>المسجلين:</b> 0\n\nاضغط على الزر للتسجيل!", 
         parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("✅ تسجيل", callback_data="tour_join")),
-        pin=True # لا يتم حذفه
+        pin=True
     )
     if msg: tournaments[msg.message_id] = {"name": tour_name, "players": {}}
     delete_message_safe(message.chat.id, message.message_id)
@@ -424,5 +457,5 @@ def handle_callbacks(call):
             bot.answer_callback_query(call.id, f"✅ تم حفظ تقييمك: {rating_val} نجوم")
         except: pass
 
-print("⚡ البوت المتطور يعمل الآن بميزات (الميوت/السبام/التسريبات المتعددة/الخرائط)...")
+print("⚡ البوت المتطور يعمل الآن بميزات (المسح 30 رسالة / تنظيف شامل / الميوت والسبام)...")
 bot.infinity_polling()
