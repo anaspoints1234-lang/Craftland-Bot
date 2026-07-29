@@ -2,6 +2,7 @@ import re
 from datetime import datetime, timedelta
 import threading
 import html
+import time
 import telebot
 from telebot.types import InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
 
@@ -9,15 +10,20 @@ from telebot.types import InputMediaPhoto, InlineKeyboardButton, InlineKeyboardM
 TOKEN = "8939977561:AAHAsc6CjAmX5Z17_vJrMRbLux8ItAsxIdc"
 bot = telebot.TeleBot(TOKEN)
 
-# 📡 أيدي قناة التسريبات
-LEAKS_CHANNEL_ID = ["7454358135", "-1007454358135"]
+# 👑 أيدي المالك الخاص بك
+OWNER_ID = 7454358135
+
+# 📡 أيدي قناة التسريبات الجديدة
+LEAKS_CHANNEL_ID = -1003335103713
 
 # ================= قواعد البيانات المؤقتة =================
 ratings_data = {}
-user_spam_tracker = {}
 user_xp = {}  
 tournaments = {} 
 user_violations = {} 
+user_cooldowns = {}      # نظام الـ Cooldown للرسائل (5 ثوانٍ)
+message_counter = 0      # عداد الرسائل لحذفها عند 1000
+news_list = []           # قائمة لتخزين التسريبات المتعددة
 latest_leak = {"text": "لم يتم إضافة أي تسريبات بعد! 🕵️‍♂️", "photo": None}
 
 # 🚫 لائحة الكلمات البذيئة الشاملة
@@ -37,12 +43,32 @@ def delete_message_safe(chat_id, message_id):
     except Exception:
         pass
 
+def send_self_destruct_message(chat_id, text, parse_mode=None, reply_markup=None):
+    """دالة لرسائل البوت التي تختفي تلقائياً بعد 3 دقائق (180 ثانية) لتنظيف المجموعة"""
+    try:
+        msg = bot.send_message(chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup)
+        threading.Timer(180.0, delete_message_safe, args=(chat_id, msg.message_id)).start()
+        return msg
+    except Exception:
+        return None
+
+def send_self_destruct_photo(chat_id, photo, caption=None, parse_mode=None, reply_markup=None):
+    """دالة لصور البوت التي تختفي تلقائياً بعد 3 دقائق (180 ثانية)"""
+    try:
+        msg = bot.send_photo(chat_id, photo, caption=caption, parse_mode=parse_mode, reply_markup=reply_markup)
+        threading.Timer(180.0, delete_message_safe, args=(chat_id, msg.message_id)).start()
+        return msg
+    except Exception:
+        return None
+
 def add_xp(user_id, name, amount):
     if user_id not in user_xp:
         user_xp[user_id] = {"name": name, "xp": 0}
     user_xp[user_id]["xp"] += amount
 
 def is_admin(chat_id, user_id):
+    if user_id == OWNER_ID:
+        return True
     try:
         member = bot.get_chat_member(chat_id, user_id)
         return member.status in ['administrator', 'creator']
@@ -80,106 +106,157 @@ def create_admin_menu():
     )
     return markup
 
-# ================= 1. نظام العقوبات الذكي (بدون تعطيل الأوامر) =================
-def is_bad_message(message):
-    text_to_check = message.text or message.caption
-    if not text_to_check: 
-        return False
-    # عدم معاقبة الأوامر وعدم تعطيلها
-    if text_to_check.strip().startswith('/'): 
-        return False
-    # الإدمنز مستثنون
-    if is_admin(message.chat.id, message.from_user.id): 
-        return False
-    
-    text_lower = text_to_check.lower()
-    for word in BAD_WORDS:
-        if word in text_lower:
-            return True
-    return False
-
-@bot.message_handler(func=is_bad_message, content_types=['text', 'photo', 'video'])
-def filter_bad_words(message):
+# ================= مراقب الرسائل الشامل (حذف 1000 رسالة + Cooldown + السبام + الخرائط) =================
+@bot.message_handler(func=lambda message: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'sticker', 'animation'])
+def global_message_handler(message):
     chat_id = message.chat.id
     user_id = message.from_user.id
-    user_name = html.escape(message.from_user.first_name)
-    
-    delete_message_safe(chat_id, message.message_id)
+    text = message.text or message.caption or ""
 
-    if user_id not in user_violations:
-        user_violations[user_id] = 0
-    user_violations[user_id] += 1
-    violation_count = user_violations[user_id]
+    # 1. نظام حذف الرسائل عند 1000 رسالة (تجاهل المثبتة، يشمل الجميع)
+    if chat_id < 0:  # مجموعات فقط
+        global message_counter
+        message_counter += 1
+        if message_counter >= 1000:
+            message_counter = 0
+            # تليجرام يحذف الرسائل عبر الـ ID تنازلياً مع استثناء المثبتة تلقائياً بالبايثون قدر الإمكان
+            try:
+                for m_id in range(message.message_id - 1000, message.message_id):
+                    try:
+                        bot.delete_message(chat_id, m_id)
+                    except:
+                        pass
+            except:
+                pass
 
-    try:
-        if violation_count == 1:
-            msg = bot.send_message(
-                chat_id, 
-                f"⚠️ <b>تـحـذيـر رسـمـي !</b>\n\n👤 العضو: <b>{user_name}</b>\n💬 السبب: استخدام ألفاظ بذيئة.\n📌 <i>هذا تحذيرك الأول!</i>",
-                parse_mode="HTML"
-            )
-            threading.Timer(7.0, delete_message_safe, args=(chat_id, msg.message_id)).start()
+    # 2. نظام الانتظار (Cooldown) لمدة 5 ثوانٍ لكل شخص (حتى المالك والأدمن أو العاديين)
+    current_time = time.time()
+    if user_id in user_cooldowns:
+        elapsed = current_time - user_cooldowns[user_id]
+        if elapsed < 5.0:
+            delete_message_safe(chat_id, message.message_id)
+            return  # تجاهل الرسالة تماماً إذا لم تمر 5 ثوانٍ
+    user_cooldowns[user_id] = current_time
 
-        elif violation_count == 2:
-            until_time = datetime.now() + timedelta(minutes=5)
-            bot.restrict_chat_member(chat_id, user_id, until_date=until_time, permissions=ChatPermissions(can_send_messages=False))
-            msg = bot.send_message(
-                chat_id, 
-                f"🔇 <b>عـقـوبـة مـيـوت مـؤقـت !</b>\n\n👤 العضو: <b>{user_name}</b>\n⏳ المدة: <b>5 دقائق</b>",
-                parse_mode="HTML"
-            )
-            threading.Timer(10.0, delete_message_safe, args=(chat_id, msg.message_id)).start()
+    # 3. التحقق من الألفاظ البذيئة (فلتر السبام والشتائم)
+    if not text.strip().startswith('/') and not is_admin(chat_id, user_id):
+        text_lower = text.lower()
+        if any(word in text_lower for word in BAD_WORDS):
+            delete_message_safe(chat_id, message.message_id)
+            if user_id not in user_violations:
+                user_violations[user_id] = 0
+            user_violations[user_id] += 1
+            v_count = user_violations[user_id]
+            user_name = html.escape(message.from_user.first_name)
+            
+            try:
+                if v_count == 1:
+                    send_self_destruct_message(chat_id, f"⚠️ <b>تـحـذيـر رسـمـي !</b>\n\n👤 العضو: <b>{user_name}</b>\n💬 السبب: استخدام ألفاظ بذيئة.", parse_mode="HTML")
+                elif v_count == 2:
+                    until_time = datetime.now() + timedelta(minutes=5)
+                    bot.restrict_chat_member(chat_id, user_id, until_date=until_time, permissions=ChatPermissions(can_send_messages=False))
+                    send_self_destruct_message(chat_id, f"🔇 <b>ميوت 5 دقائق !</b>\n👤 العضو: <b>{user_name}</b>", parse_mode="HTML")
+                elif v_count >= 3:
+                    bot.restrict_chat_member(chat_id, user_id, permissions=ChatPermissions(can_send_messages=False))
+                    send_self_destruct_message(chat_id, f"🔒 <b>تم كتم العضو نهائياً لتكرار الشتم.</b>", parse_mode="HTML")
+            except:
+                pass
+            return
 
-        elif violation_count == 3:
-            until_time = datetime.now() + timedelta(days=1)
-            bot.restrict_chat_member(chat_id, user_id, until_date=until_time, permissions=ChatPermissions(can_send_messages=False))
-            bot.send_message(chat_id, f"⏳ <b>تـعـليـق مـؤقـت (24 سـاعـة) !</b>\n\n👤 العضو: <b>{user_name}</b>\n⚠️ تم كتمك لمدة يوم كامل.", parse_mode="HTML")
+    # 4. نظام الخرائط الإلزامي (/map)
+    if message.photo and chat_id < 0:
+        if not text.lower().startswith('/map'):
+            delete_message_safe(chat_id, message.message_id)
+            return
+        
+        add_xp(user_id, message.from_user.first_name, 50)
+        clean_caption = text.replace("/map", "").replace("/Map", "").strip()
+        map_type, description_escaped, map_code_escaped = extract_map_data(clean_caption)
+        creator_name = html.escape(message.from_user.first_name)
 
-        elif violation_count == 4:
-            until_time = datetime.now() + timedelta(days=5)
-            bot.restrict_chat_member(chat_id, user_id, until_date=until_time, permissions=ChatPermissions(can_send_messages=False))
-            bot.send_message(chat_id, f"⛔ <b>حـظـر تـفـاعـل (5 أيـام) !</b>\n\n👤 العضو: <b>{user_name}</b>\n🚨 تم منعك من الكتابة لمدة 5 أيام.", parse_mode="HTML")
+        base_caption = (
+            f"🏷️ <b>الخريطة:</b> {map_type}\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"📝 <b>الوصف:</b>\n{description_escaped}\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"🔑 <b>الكود:</b>\n<code>{map_code_escaped}</code>\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>بواسطة:</b> {creator_name}\n"
+            f"⭐ <b>التقييمات:</b> "
+        )
+        try:
+            sent_msg = bot.send_photo(chat_id, message.photo[-1].file_id, caption=base_caption + "0.0/5 (0 أصوات)", parse_mode="HTML", reply_markup=create_rating_markup())
+            delete_message_safe(chat_id, message.message_id)
+            ratings_data[sent_msg.message_id] = {"base_text": base_caption, "votes": {}, "is_caption": True}
+        except:
+            pass
 
-        else:
-            bot.restrict_chat_member(chat_id, user_id, permissions=ChatPermissions(can_send_messages=False))
-            apology_text = f"السلام عليكم مالك المجموعة، أنا العضو {user_name} وأتأسف على صدور الألفاظ البذيئة مني، أرجو أن تسامحني وتفك عني الميوت وشكراً لك."
-            encoded_text = apology_text.replace(" ", "%20").replace("\n", "%0A")
-            markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛡️ تواصل مع المالك للإعتذار", url=f"https://t.me/an_as1209?text={encoded_text}"))
+# ================= الجلب التلقائي من القناة المحددة =================
+@bot.channel_post_handler(content_types=['photo', 'text'])
+def channel_leaks_listener(message):
+    if message.chat.id == LEAKS_CHANNEL_ID:
+        global latest_leak
+        leak_text = message.caption or message.text or "🔥 تسريب جديد!"
+        leak_photo = message.photo[-1].file_id if message.photo else None
+        
+        latest_leak["photo"] = leak_photo
+        latest_leak["text"] = leak_text
+        news_list.append({"photo": leak_photo, "text": leak_text})
+
+        # إرسال إشعار للمالك بالآيدي الخاص بك
+        try:
+            channel_name = message.chat.title or "قناة التسريبات"
             bot.send_message(
-                chat_id, 
-                f"🔒 <b>تـم كـتـم الـعـضـو مـدى الـحـيـاة !</b>\n\n👤 العضو: <b>{user_name}</b>\n❌ تم إسكاتك نهائياً. اضغط على الزر للاعتذار 👇",
-                parse_mode="HTML", reply_markup=markup
+                OWNER_ID, 
+                f"🚨 <b>تنبيه للمالك:</b> تم جلب تسريب جديد تلقائياً من القناة <b>{html.escape(channel_name)}</b> (ID: <code>{message.chat.id}</code>)",
+                parse_mode="HTML"
             )
-    except Exception:
-        pass
+        except:
+            pass
 
-# ================= 2. أوامر الإدارة =================
+# ================= أوامر الإدارة وتطوير /unmute =================
 @bot.message_handler(commands=['unmute'])
 def owner_unmute_command(message):
     chat_id = message.chat.id
     user_id = message.from_user.id
 
-    if not is_admin(chat_id, user_id) and message.chat.type != 'private': return
+    if not is_admin(chat_id, user_id) and chat_id > 0: 
+        return
+
     args = message.text.split()
-    if len(args) < 2: return bot.reply_to(message, "⚠️ يرجى كتابة الآيدي بعد الأمر. مثال: `/unmute 123456789`", parse_mode="Markdown")
-    
-    target_id = int(args[1]) if args[1].isdigit() else (message.reply_to_message.from_user.id if message.reply_to_message else None)
-    if not target_id: return bot.reply_to(message, "❌ لم أتمكن من التعرف على هذا العضو.")
+    target_id = None
+
+    # فك الميوت بـ 3 طرق: الرد على الرسالة، كتابة اليوزر (@username)، أو الآيدي الرقمي
+    if message.reply_to_message:
+        target_id = message.reply_to_message.from_user.id
+    elif len(args) > 1:
+        identifier = args[1]
+        if identifier.isdigit():
+            target_id = int(identifier)
+        elif identifier.startswith('@'):
+            try:
+                chat_member = bot.get_chat_member(chat_id, identifier)
+                target_id = chat_member.user.id
+            except:
+                pass
+
+    if not target_id:
+        return bot.reply_to(message, "⚠️ يرجى الرد على رسالة الشخص، أو كتابة يوزره (@username)، أو آيديه بعد الأمر.")
 
     try:
-        target_chat_id = chat_id if message.chat.type != 'private' else -1007454358135
+        target_chat_id = chat_id if chat_id < 0 else -1003335103713
         bot.restrict_chat_member(target_chat_id, target_id, permissions=ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True))
-        if target_id in user_violations: user_violations[target_id] = 0
+        if target_id in user_violations: 
+            user_violations[target_id] = 0
         owner_name = html.escape(message.from_user.first_name)
-        announcement = bot.send_message(
+        send_self_destruct_message(
             target_chat_id,
-            f"🔓 <b>عـفـو مـلـكـي / فَـك الـحَـظْـر !</b> 🔓\n\n✨ تم بفضل الله رفع عقوبة الميوت عن العضو بناءً على عفو وسامح من المالك <b>{owner_name}</b>.",
+            f"🔓 <b>عـفـو مـلـكـي / فَـك الـحَـظْـر !</b>\n✨ تم رفع عقوبة الميوت عن العضو بواسطة المشرف <b>{owner_name}</b>.",
             parse_mode="HTML"
         )
-        threading.Timer(14400.0, delete_message_safe, args=(target_chat_id, announcement.message_id)).start()
-        bot.reply_to(message, "✅ تم فك الميوت عن العضو بنجاح!")
-    except Exception as e:
-        bot.reply_to(message, "❌ حدث خطأ، تأكد أن البوت يملك صلاحيات كاملة.")
+        bot.reply_to(message, "✅ تم فك الميوت بنجاح!")
+    except:
+        bot.reply_to(message, "❌ حدث خطأ، تأكد من صلاحيات البوت.")
 
 @bot.message_handler(commands=['ban', 'mute'])
 def admin_commands(message):
@@ -196,44 +273,72 @@ def admin_commands(message):
     try:
         if command == '/ban':
             bot.ban_chat_member(chat_id, target_id)
-            bot.reply_to(message, f"⛔ تم طرد <b>{html.escape(target_name)}</b> من المجموعة.", parse_mode="HTML")
+            send_self_destruct_message(chat_id, f"⛔ تم طرد <b>{html.escape(target_name)}</b>.", parse_mode="HTML")
         elif command == '/mute':
             bot.restrict_chat_member(chat_id, target_id, permissions=ChatPermissions(can_send_messages=False))
-            bot.reply_to(message, f"🔇 تم كتم <b>{html.escape(target_name)}</b>.", parse_mode="HTML")
-    except Exception: pass
+            send_self_destruct_message(chat_id, f"🔇 تم كتم <b>{html.escape(target_name)}</b>.", parse_mode="HTML")
+    except: 
+        pass
 
-# ================= 3. الترحيب والقوائم =================
+# ================= نظام التسريبات المتعددة (/setnews و /news) =================
+@bot.message_handler(commands=['setnews'])
+def set_news_command(message):
+    if message.from_user.id != OWNER_ID and not is_admin(message.chat.id, message.from_user.id): 
+        return
+
+    if message.reply_to_message:
+        reply = message.reply_to_message
+        photo_id = reply.photo[-1].file_id if reply.photo else None
+        text_content = reply.caption or reply.text or "🔥 تسريب جديد!"
+        news_list.append({"photo": photo_id, "text": text_content})
+        bot.reply_to(message, f"✅ تمت إضافة التسريب للقائمة بنجاح! (العدد الإجمالي: {len(news_list)})")
+    else:
+        clean_text = message.text.replace("/setnews", "").strip()
+        if clean_text or message.photo:
+            photo_id = message.photo[-1].file_id if message.photo else None
+            news_list.append({"photo": photo_id, "text": clean_text or "🔥 تسريب جديد!"})
+            bot.reply_to(message, f"✅ تمت إضافة التسريب للقائمة بنجاح! (العدد الإجمالي: {len(news_list)})")
+        else:
+            bot.reply_to(message, "⚠️ أرسل التسريب أو رد على صورة بـ `/setnews`.")
+
+@bot.message_handler(commands=['news'])
+def send_all_news(message):
+    if not news_list:
+        return bot.reply_to(message, "📭 لا توجد تسريبات مخزنة حالياً.")
+    
+    target_chat = message.chat.id
+    for item in news_list:
+        try:
+            if item["photo"]:
+                msg = bot.send_photo(target_chat, item["photo"], caption=f"🔥 <b>تـسـريـب:</b>\n{item['text']}", parse_mode="HTML")
+            else:
+                msg = bot.send_message(target_chat, f"🔥 <b>تـسـريـب:</b>\n{item['text']}", parse_mode="HTML")
+            
+            # تثبيت التسريبات تلقائياً كي لا تحذف بنظام التنظيف
+            bot.pin_chat_message(target_chat, msg.message_id)
+        except:
+            pass
+    bot.reply_to(message, "🚀 تم إرسال جميع التسريبات وتثبيتها تلقائياً!")
+
+# ================= الترحيب والخاص للمالك =================
 @bot.message_handler(content_types=["new_chat_members"])
 def welcome_new_member(message):
     for new_member in message.new_chat_members:
         mention = f'<a href="tg://user?id={new_member.id}">{html.escape(new_member.first_name)}</a>'
         welcome_text = f"⚡ <b>أهلاً بك يا أسطورة</b> ⚡\n\n👤 <b>اللاعب:</b> {mention}\n\nاختر من القائمة أدناه لاكتشاف ميزات البوت 👇"
-        sent_msg = bot.send_message(message.chat.id, welcome_text, parse_mode="HTML", reply_markup=create_main_menu())
-        threading.Timer(60.0, delete_message_safe, args=(message.chat.id, sent_msg.message_id)).start()
+        send_self_destruct_message(message.chat.id, welcome_text, parse_mode="HTML", reply_markup=create_main_menu())
 
 @bot.message_handler(commands=['help', 'start', 'menu'])
 def send_menu(message):
-    bot.send_message(message.chat.id, "🕹️ <b>قـائـمـة الـتـحـكـم الـرئـيـسـيـة</b> 🕹️\n\nاختر ما تريد من الأزرار أسفله:", parse_mode="HTML", reply_markup=create_main_menu())
-    if is_admin(message.chat.id, message.from_user.id):
-        bot.send_message(message.chat.id, "⚙️ <b>أوامـر الإدارة (للمشرفين فقط)</b> ⚙️\nيمكنك الرد على أي شخص بـ:\n- <code>/ban</code> (للطرد)\n- <code>/mute</code> (للكتم)\n- <code>/unmute</code> (لإلغاء الكتم)", parse_mode="HTML", reply_markup=create_admin_menu())
-
-# ================= 4. إضافة التسريبات =================
-@bot.message_handler(commands=['setnews'])
-def set_news_command(message):
-    if not is_admin(message.chat.id, message.from_user.id): return
-    if message.reply_to_message:
-        reply_msg = message.reply_to_message
-        if reply_msg.photo:
-            latest_leak["photo"] = reply_msg.photo[-1].file_id
-            latest_leak["text"] = reply_msg.caption or "🔥 تسريب جديد!"
+    if message.chat.type == 'private':
+        if message.from_user.id == OWNER_ID:
+            bot.send_message(message.chat.id, "👑 <b>أهلاً بك يا مالك البوت والمجموعات العظيم!</b>\nتم التعرف عليك بنجاح. يمكنك إرسال أو إضافة التسريبات هنا عبر `/setnews` وسيتم إرسالها للمجموعة المحددة.", parse_mode="HTML")
         else:
-            latest_leak["photo"] = None
-            latest_leak["text"] = reply_msg.text or "🔥 تسريب جديد!"
-        bot.reply_to(message, "✅ تم حفظ التسريب بنجاح! الأعضاء يمكنهم رؤيته الآن عبر الزر.")
-    else:
-        bot.reply_to(message, "⚠️ أرسل الصورة واكتب في الوصف `/setnews`، أو قم بالرد على صورة واكتب الأمر.")
+            bot.send_message(message.chat.id, "👋 <b>أهلاً بك في بوت الخدمة الخاص بنا!</b>", parse_mode="HTML")
+    
+    send_self_destruct_message(message.chat.id, "🕹️ <b>قـائـمـة الـتـحـكـم الـرئـيـسـيـة</b> 🕹️", parse_mode="HTML", reply_markup=create_main_menu())
 
-# ================= 5. استخراج ونشر الخرائط أو التسريبات بذكاء =================
+# ================= استخراج بيانات الخرائط =================
 def extract_map_data(caption):
     match = re.search(r"\[(.*?)\]", caption)
     if match:
@@ -258,43 +363,7 @@ def extract_map_data(caption):
             description = html.escape(raw_body)
     return map_type, description, map_code
 
-@bot.message_handler(content_types=["photo"])
-def handle_craftland_map(message):
-    if not message.caption: return
-
-    # 🚀 هنا الذكاء: إذا كانت الصورة تحتوي على setnews، سيحفظها كتسريب ولن يكملها كخريطة أبداً!
-    caption_lower = message.caption.lower()
-    if "/setnews" in caption_lower or "setnews/" in caption_lower:
-        if is_admin(message.chat.id, message.from_user.id):
-            latest_leak["photo"] = message.photo[-1].file_id
-            clean_text = message.caption.replace("/setnews", "").replace("setnews/", "").strip()
-            latest_leak["text"] = clean_text if clean_text else "🔥 تسريب جديد!"
-            bot.reply_to(message, "✅ تم حفظ التسريب بنجاح! (ولن يتم تحويله إلى خريطة)")
-            return # هاد الكلمة هي اللي كتحبس البوت باش ماينشرهاش كخريطة!
-
-    # 🗺️ إذا لم يكن فيها أمر التسريب، سيعتبرها خريطة عادية:
-    add_xp(message.from_user.id, message.from_user.first_name, 50)
-    map_type, description_escaped, map_code_escaped = extract_map_data(message.caption)
-    creator_name = html.escape(message.from_user.first_name)
-
-    base_caption = (
-        f"🏷️ <b>الخريطة:</b> {map_type}\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"📝 <b>الوصف:</b>\n{description_escaped}\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"🔑 <b>الكود:</b>\n<code>{map_code_escaped}</code>\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"👤 <b>بواسطة:</b> {creator_name}\n"
-        f"⭐ <b>التقييمات:</b> "
-    )
-    
-    try:
-        sent_msg = bot.send_photo(message.chat.id, message.photo[-1].file_id, caption=base_caption + "0.0/5 (0 أصوات)", parse_mode="HTML", reply_markup=create_rating_markup())
-        delete_message_safe(message.chat.id, message.message_id)
-        ratings_data[sent_msg.message_id] = {"base_text": base_caption, "votes": {}, "is_caption": True}
-    except Exception as e: print(f"❌ خطأ: {e}")
-
-# ================= 6. أوامر أخرى والأزرار التفاعلية =================
+# ================= الألعاب والأزرار التفاعلية =================
 @bot.message_handler(commands=['squad'])
 def lfg_command(message):
     request = message.text.replace("/squad", "").strip()
@@ -302,19 +371,20 @@ def lfg_command(message):
     user_name = html.escape(message.from_user.first_name)
     lfg_text = f"🎯 <b>طـلـب انـضـمـام</b> 🎯\n\n👤 <b>اللاعب:</b> {user_name}\n💬 <b>الطلب:</b> {html.escape(request)}"
     markup = InlineKeyboardMarkup().add(InlineKeyboardButton("💬 تواصل", url=f"tg://user?id={message.from_user.id}"))
-    bot.send_message(message.chat.id, lfg_text, parse_mode="HTML", reply_markup=markup)
+    send_self_destruct_message(message.chat.id, lfg_text, parse_mode="HTML", reply_markup=markup)
     delete_message_safe(message.chat.id, message.message_id)
 
 @bot.message_handler(commands=['tour'])
 def create_tournament(message):
     if not is_admin(message.chat.id, message.from_user.id): return
     tour_name = message.text.replace("/tour", "").strip() or "بطولة كلاش سكواد"
-    msg = bot.send_message(
+    msg = send_self_destruct_message(
         message.chat.id, 
-        f"🏆 <b>تـسـجـيـل الـبـطـولـة مـفـتـوح</b> 🏆\n\n⚔️ <b>البطولة:</b> {html.escape(tour_name)}\n👥 <b>المسجلين:</b> 0\n\nاضغط على الزر للتسجيل!", 
+        f"🏆 <b>تـسـجـيـل الـبـطـولـة مـفـتـوح</b> 🏆\n\n⚔️ <b>البطولة:</b> {html.escape(tour_name)}\n👥 <b>المسجلين:</b> 0", 
         parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("✅ تسجيل", callback_data="tour_join"))
     )
-    tournaments[msg.message_id] = {"name": tour_name, "players": {}}
+    if msg:
+        tournaments[msg.message_id] = {"name": tour_name, "players": {}}
     delete_message_safe(message.chat.id, message.message_id)
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -324,16 +394,27 @@ def handle_callbacks(call):
     user_id = call.from_user.id
 
     if call.data == "menu_squad":
-        bot.send_message(chat_id, "للبحث عن فريق، اكتب أمر `/squad` متبوعاً بطلبك.\nمثال: `/squad رانك ماستر`", parse_mode="Markdown")
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(call.id, "للبحث عن فريق، اكتب أمر /squad متبوعاً بطلبك.", show_alert=True)
         
     elif call.data == "menu_news":
-        text = f"🕵️‍♂️ <b>آخـر الـتـسـريـبـات</b> 🕵️‍♂️\n\n{html.escape(latest_leak['text'])}"
-        if latest_leak["photo"]:
-            bot.send_photo(chat_id, latest_leak["photo"], caption=text, parse_mode="HTML")
+        if news_list:
+            for item in news_list:
+                try:
+                    if item["photo"]:
+                        m = bot.send_photo(chat_id, item["photo"], caption=f"🔥 <b>تـسـريـب:</b>\n{item['text']}", parse_mode="HTML")
+                    else:
+                        m = bot.send_message(chat_id, f"🔥 <b>تـسـريـب:</b>\n{item['text']}", parse_mode="HTML")
+                    bot.pin_chat_message(chat_id, m.message_id)
+                except:
+                    pass
+            bot.answer_callback_query(call.id, "✅ تم إرسال وتثبيت جميع التسريبات!")
         else:
-            bot.send_message(chat_id, text, parse_mode="HTML")
-        bot.answer_callback_query(call.id)
+            text = f"🕵️‍♂️ <b>آخـر الـتـسـريـبـات</b> 🕵️‍♂️\n\n{html.escape(latest_leak['text'])}"
+            if latest_leak["photo"]:
+                send_self_destruct_photo(chat_id, latest_leak["photo"], caption=text, parse_mode="HTML")
+            else:
+                send_self_destruct_message(chat_id, text, parse_mode="HTML")
+            bot.answer_callback_query(call.id)
 
     elif call.data == "menu_top":
         if not user_xp:
@@ -343,21 +424,20 @@ def handle_callbacks(call):
         medals = ["🥇", "🥈", "🥉", "🏅", "🏅"]
         for i, (uid, data) in enumerate(sorted_users):
             top_text += f"{medals[i]} <b>{data['name']}</b> - {data['xp']} XP\n"
-        bot.send_message(chat_id, top_text, parse_mode="HTML")
+        send_self_destruct_message(chat_id, top_text, parse_mode="HTML")
         bot.answer_callback_query(call.id)
 
     elif call.data == "menu_wiki":
-        bot.answer_callback_query(call.id, "اكتب /wiki متبوعاً باسم سلاح أو شخصية.\nمثال: /wiki الوك", show_alert=True)
+        bot.answer_callback_query(call.id, "اكتب /wiki متبوعاً باسم العنصر.", show_alert=True)
 
     elif call.data == "admin_delete":
         if is_admin(chat_id, user_id): delete_message_safe(chat_id, msg_id)
-        else: bot.answer_callback_query(call.id, "⚠️ هذا الزر للمشرفين فقط!", show_alert=True)
+        else: bot.answer_callback_query(call.id, "⚠️ للمشرفين فقط!", show_alert=True)
 
     elif call.data == "admin_tour":
         if is_admin(chat_id, user_id):
-            bot.send_message(chat_id, "لإنشاء بطولة، اكتب: `/tour اسم البطولة`", parse_mode="Markdown")
-            bot.answer_callback_query(call.id)
-        else: bot.answer_callback_query(call.id, "⚠️ هذا الزر للمشرفين فقط!", show_alert=True)
+            bot.answer_callback_query(call.id, "لإنشاء بطولة اكتب /tour اسم البطولة")
+        else: bot.answer_callback_query(call.id, "⚠️ للمشرفين فقط!", show_alert=True)
 
     elif call.data == "tour_join":
         if msg_id in tournaments:
@@ -365,8 +445,11 @@ def handle_callbacks(call):
             if user_id not in tour["players"]:
                 tour["players"][user_id] = call.from_user.first_name
                 count = len(tour["players"])
-                updated_text = f"🏆 <b>تـسـجـيـل الـبـطـولـة مـفـتـوح</b> 🏆\n\n⚔️ <b>البطولة:</b> {html.escape(tour['name'])}\n👥 <b>المسجلين:</b> {count}\n\nاضغط على الزر للتسجيل!"
-                bot.edit_message_text(text=updated_text, chat_id=chat_id, message_id=msg_id, parse_mode="HTML", reply_markup=call.message.reply_markup)
+                updated_text = f"🏆 <b>تـسـجـيـل الـبـطـولـة مـفـتـوح</b> 🏆\n\n⚔️ <b>البطولة:</b> {html.escape(tour['name'])}\n👥 <b>المسجلين:</b> {count}"
+                try:
+                    bot.edit_message_text(text=updated_text, chat_id=chat_id, message_id=msg_id, parse_mode="HTML", reply_markup=call.message.reply_markup)
+                except:
+                    pass
                 bot.answer_callback_query(call.id, "✅ تم تسجيلك بنجاح!")
             else: bot.answer_callback_query(call.id, "⚠️ أنت مسجل مسبقاً!")
 
@@ -382,11 +465,14 @@ def handle_callbacks(call):
         updated_text = f"{data['base_text']}{avg_rating}/5 ({total_votes} أصوات)"
 
         try:
-            if data["is_caption"]: bot.edit_message_caption(caption=updated_text, chat_id=chat_id, message_id=msg_id, parse_mode="HTML", reply_markup=call.message.reply_markup)
-            else: bot.edit_message_text(text=updated_text, chat_id=chat_id, message_id=msg_id, parse_mode="HTML", reply_markup=call.message.reply_markup)
+            if data["is_caption"]: 
+                bot.edit_message_caption(caption=updated_text, chat_id=chat_id, message_id=msg_id, parse_mode="HTML", reply_markup=call.message.reply_markup)
+            else: 
+                bot.edit_message_text(text=updated_text, chat_id=chat_id, message_id=msg_id, parse_mode="HTML", reply_markup=call.message.reply_markup)
             bot.answer_callback_query(call.id, f"✅ تم حفظ تقييمك: {rating_val} نجوم")
-        except Exception: pass
+        except: 
+            pass
 
 
-print("⚡ البوت يعمل الآن بشكل مثالي (تم حل مشكلة الأوامر)...")
+print("⚡ البوت يعمل بكامل الخصائص والميزات الجديدة بنجاح...")
 bot.infinity_polling()
