@@ -1,471 +1,285 @@
-import re
-import time
-from datetime import datetime, timedelta
-import threading
-import html
-import telebot
-from telebot.types import InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
-from telebot.handler_backends import BaseMiddleware, CancelUpdate
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler, 
+    MessageHandler, filters, ContextTypes, ConversationHandler
+)
 
-# 🔑 توكن البوت الخاص بك
-TOKEN = "8939977561:AAHAsc6CjAmX5Z17_vJrMRbLux8ItAsxIdc"
-bot = telebot.TeleBot(TOKEN)
+# ----------------------------------------------------
+# 1. إعدادات البوت والبيانات الأساسية
+# ----------------------------------------------------
+BOT_TOKEN = "8939977561:AAHAsc6CjAmX5Z17_vJrMRbLux8ItAsxIdc"
+CHANNEL_ID = -1003947857086
+DEVELOPER_ID = 7454358135
 
-# 📡 أيدي القنوات والمالك
-LEAKS_CHANNEL_ID = "-1003335103713"
-OWNER_ID = 7454358135
+# قاعدة بيانات مؤقتة في الذاكرة (Memory DB)
+user_nicknames = {}  # {user_id: nickname}
+registered_players = {}  # {user_id: user_obj}
+tournaments_db = {}  # مؤقت لحفظ معطيات البطولة أثناء الإنشاء
 
-# ================= قواعد البيانات المؤقتة =================
-ratings_data = {}
-user_xp = {}  
-tournaments = {} 
-user_violations = {} 
+# مراحل الـ Conversation Handler
+SET_NICKNAME = 1
+ROOM_ID_PASS = 2
+RESULT_IMAGE = 3
 
-saved_leaks = []  # قائمة لحفظ التسريبات المتعددة
-last_owner_leak_date = None # تتبع تاريخ آخر تسريب للمالك
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
-# قواعد بيانات التتبع والسبام
-user_cooldowns = {} # وقت آخر رسالة للعضو (للـ 5 ثواني)
-username_cache = {} # حفظ المعرفات لتسهيل أمر unmute
+# ----------------------------------------------------
+# 2. الترحيب بعضو جديد في القناة
+# ----------------------------------------------------
+async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    for member in update.chat_member.new_chat_members:
+        name = member.full_name
+        welcome_text = (
+            f"⚔️ **مرحباً بك يا {name} في ساحة النخبة والتكتيك!** ⚔️\n\n"
+            f"أهلاً بك في أكاديميتنا الخاصة بـ **Free Fire E-Sports**.\n"
+            f"هنا لا مكان للعشوائية؛ نسعى لصناعة قادة الفرق وتحليل التكتيكات الوصول للقمة.\n\n"
+            f"🎯 *جاهز لاختبار مهاراتك والتنافس بشرف؟*"
+        )
+        keyboard = [
+            [InlineKeyboardButton("🏆 البطولات المنظمة حالياً", callback_query_data="current_tournaments")],
+            [InlineKeyboardButton("👤 تسجيل اللقب / التواصل مع البوت", url=f"https://t.me/{context.bot.username}?start=register")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=welcome_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
 
-# 🚫 لائحة الكلمات البذيئة الشاملة
-BAD_WORDS = [
-    "قحب", "قحبة", "تبة", "زمل", "زملي", "زامل", "حاوي", "منيوك", "مك", "مكك", "اختك", "موك", 
-    "تيك", "زبي", "زب", "قلاوي", "قلوة", "طاسيلتك", "عصيد", "كحاب", "ميكة", "بزول", "طرمة",
-    "كلب", "حمار", "وسخ", "منحط", "حقير", "لعنة", "ابن الحرام", "ساقط", "متخلف", "قذر",
-    "fuck", "fucking", "shit", "bitch", "asshole", "dick", "cunt", "bastard", "slut", "whore", 
-    "idiot", "motherfucker", "pussy", "crap", "suck"
-]
+# ----------------------------------------------------
+# 3. أمر /start والتسجيل للمستخدمين والمشرفين
+# ----------------------------------------------------
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat_type = update.effective_chat.type
 
-# ================= دوال المساعدة =================
-def delete_message_safe(chat_id, message_id):
-    try:
-        bot.delete_message(chat_id, message_id)
-    except Exception:
-        pass
-
-def send_and_schedule(chat_id, text, **kwargs):
-    """إرسال رسالة وحذفها تلقائياً بعد 3 دقائق ما لم يطلب تثبيتها"""
-    pin = kwargs.pop('pin', False)
-    try:
-        msg = bot.send_message(chat_id, text, **kwargs)
-        if pin:
-            try: bot.pin_chat_message(chat_id, msg.message_id)
-            except: pass
-        else:
-            threading.Timer(180.0, delete_message_safe, args=(chat_id, msg.message_id)).start()
-        return msg
-    except: return None
-
-def add_xp(user_id, name, amount):
-    if user_id not in user_xp: user_xp[user_id] = {"name": name, "xp": 0}
-    user_xp[user_id]["xp"] += amount
-
-def is_admin(chat_id, user_id):
-    if user_id == OWNER_ID: return True
-    try:
-        member = bot.get_chat_member(chat_id, user_id)
-        return member.status in ['administrator', 'creator']
-    except: return False
-
-# ================= لوحات الأزرار =================
-def create_rating_markup():
-    markup = InlineKeyboardMarkup(row_width=5)
-    markup.add(
-        InlineKeyboardButton("⭐ 1", callback_data="rate_1"), InlineKeyboardButton("⭐ 2", callback_data="rate_2"),
-        InlineKeyboardButton("⭐ 3", callback_data="rate_3"), InlineKeyboardButton("⭐ 4", callback_data="rate_4"),
-        InlineKeyboardButton("⭐ 5", callback_data="rate_5")
-    )
-    return markup
-
-def create_main_menu():
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("🔍 بحث عن سكواد", callback_data="menu_squad"),
-        InlineKeyboardButton("🔥 آخر التسريبات", callback_data="menu_news"),
-        InlineKeyboardButton("🏆 أفضل اللاعبين", callback_data="menu_top"),
-        InlineKeyboardButton("📚 موسوعة اللعبة", callback_data="menu_wiki"),
-        InlineKeyboardButton("🛡️ دعم المجموعة", url="https://t.me/an_as1209")
-    )
-    return markup
-
-def create_admin_menu():
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("🏆 إنشاء بطولة", callback_data="admin_tour"),
-        InlineKeyboardButton("🗑️ حذف الرسالة", callback_data="admin_delete")
-    )
-    return markup
-
-# ================= 0. نظام التتبع المتقدم (Middleware) =================
-class BotMiddleware(BaseMiddleware):
-    def __init__(self):
-        super().__init__()
-        self.update_types = ['message']
-
-    def pre_process(self, message, data):
-        if not message: return
-        chat_id = message.chat.id
-        user_id = message.from_user.id
-
-        # تحديث ذاكرة المعرفات (Usernames)
-        if message.from_user.username:
-            username_cache["@" + message.from_user.username.lower()] = user_id
-
-        # تنفيذ الأوامر داخل المجموعة
-        if message.chat.type in ['group', 'supergroup']:
-            # 1. نظام الـ 5 ثواني (السبام)
-            if not is_admin(chat_id, user_id):
-                now = time.time()
-                last_time = user_cooldowns.get(user_id, 0)
-                if now - last_time < 5:
-                    delete_message_safe(chat_id, message.message_id)
-                    return CancelUpdate()
-                user_cooldowns[user_id] = now
-
-    def post_process(self, message, data, exception):
-        pass
-
-bot.setup_middleware(BotMiddleware())
-
-# ================= 1. نظام العقوبات الذكي =================
-def is_bad_message(message):
-    text = message.text or message.caption
-    if not text or text.strip().startswith('/'): return False
-    if is_admin(message.chat.id, message.from_user.id): return False
-    
-    text_lower = text.lower()
-    return any(word in text_lower for word in BAD_WORDS)
-
-@bot.message_handler(func=is_bad_message, content_types=['text', 'photo', 'video'])
-def filter_bad_words(message):
-    chat_id, user_id = message.chat.id, message.from_user.id
-    user_name = html.escape(message.from_user.first_name)
-    delete_message_safe(chat_id, message.message_id)
-
-    user_violations[user_id] = user_violations.get(user_id, 0) + 1
-    v_count = user_violations[user_id]
-
-    try:
-        if v_count == 1:
-            send_and_schedule(chat_id, f"⚠️ <b>تـحـذيـر رسـمـي !</b>\n\n👤 العضو: <b>{user_name}</b>\n💬 السبب: استخدام ألفاظ بذيئة.\n📌 <i>هذا تحذيرك الأول!</i>", parse_mode="HTML")
-        elif v_count == 2:
-            bot.restrict_chat_member(chat_id, user_id, until_date=datetime.now() + timedelta(minutes=5), permissions=ChatPermissions(can_send_messages=False))
-            send_and_schedule(chat_id, f"🔇 <b>عـقـوبـة مـيـوت مـؤقـت !</b>\n\n👤 العضو: <b>{user_name}</b>\n⏳ المدة: <b>5 دقائق</b>", parse_mode="HTML")
-        elif v_count == 3:
-            bot.restrict_chat_member(chat_id, user_id, until_date=datetime.now() + timedelta(days=1), permissions=ChatPermissions(can_send_messages=False))
-            send_and_schedule(chat_id, f"⏳ <b>تـعـليـق مـؤقـت (24 سـاعـة) !</b>\n\n👤 العضو: <b>{user_name}</b>\n⚠️ تم كتمك لمدة يوم كامل.", parse_mode="HTML")
-        elif v_count == 4:
-            bot.restrict_chat_member(chat_id, user_id, until_date=datetime.now() + timedelta(days=5), permissions=ChatPermissions(can_send_messages=False))
-            send_and_schedule(chat_id, f"⛔ <b>حـظـر تـفـاعـل (5 أيـام) !</b>\n\n👤 العضو: <b>{user_name}</b>\n🚨 تم منعك من الكتابة لمدة 5 أيام.", parse_mode="HTML")
-        else:
-            bot.restrict_chat_member(chat_id, user_id, permissions=ChatPermissions(can_send_messages=False))
-            markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛡️ تواصل للإعتذار", url=f"https://t.me/an_as1209"))
-            send_and_schedule(chat_id, f"🔒 <b>تـم كـتـم الـعـضـو مـدى الـحـيـاة !</b>\n\n👤 العضو: <b>{user_name}</b>\n❌ تم إسكاتك نهائياً.", parse_mode="HTML", reply_markup=markup)
-    except: pass
-
-# ================= 2. أوامر الإدارة وتحديث /delmsg =================
-@bot.message_handler(commands=['delmsg'])
-def delete_all_messages_command(message):
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    
-    if not is_admin(chat_id, user_id): 
+    if chat_type != 'private':
         return
-    
-    # إرسال رسالة التقدم وحفظ الآيدي الخاص بها لكي لا يتم مسحها
-    status_msg = bot.send_message(chat_id, "🧹 <b>جاري تنظيف رسائل المجموعة...</b>\n[░░░░░░░░░░] 0%", parse_mode="HTML")
-    
-    def clear_history():
-        current_id = message.message_id
-        pinned_id = None
-        try:
-            c = bot.get_chat(chat_id)
-            if c.pinned_message: pinned_id = c.pinned_message.message_id
-        except: pass
 
-        # كمية الرسائل التي سيتم البحث عنها ومسحها
-        limit = 3000
-        start_id = current_id
-        end_id = max(0, current_id - limit)
-        total_steps = max(1, limit // 100)
-        
-        # تقسيم الحذف لدفعات من 100 رسالة
-        for step, start in enumerate(range(start_id, end_id, -100)):
-            # استثناء الرسالة المثبتة ورسالة شريط التقدم
-            batch = [i for i in range(start, max(end_id, start - 100), -1) if i != pinned_id and i != status_msg.message_id]
-            
+    # فحص ما إذا كان المستخدم مشرفاً أو المطور
+    is_admin = False
+    if user.id == DEVELOPER_ID:
+        is_admin = True
+    else:
+        try:
+            member = await context.bot.get_chat_member(CHANNEL_ID, user.id)
+            if member.status in ['administrator', 'creator']:
+                is_admin = True
+        except Exception:
+            is_admin = False
+
+    # 🟢 مسار المشرفين
+    if is_admin:
+        admin_text = (
+            f"🛡️ **مرحباً بك أيها المشرف القائد @{user.username or user.first_name}**\n\n"
+            f"منصة التحكم في بطولات E-Sports جاهزة تحت إمرتك.\n"
+            f"يمكنك الآن إنشاء روم تكتيكية جديدة وتنظيم التسجيل آلياً."
+        )
+        keyboard = [[InlineKeyboardButton("🎮 إنشاء بطولة جديدة", callback_data="create_tournament")]]
+        await update.message.reply_text(
+            admin_text, 
+            parse_mode="Markdown", 
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ConversationHandler.END
+
+    # 🔵 مسار المتابعين (حفظ اللقب)
+    if user.id in user_nicknames:
+        await update.message.reply_text(
+            f"مرحباً بك مجدداً يا **{user_nicknames[user.id]}**!\n"
+            f"بياناتك مسجلة لدينا مسبقاً. ستتلقى إشعارات البطولات هنا فور إطلاقها.",
+            parse_mode="Markdown"
+        )
+        return ConversationHandler.END
+    else:
+        await update.message.reply_text(
+            "⚔️ **مرحباً بك في البوت التنظيمي للبطولات!**\n\n"
+            "من فضلك أرسل **لقبك أو اسمك داخل لعبة Free Fire** للتحقق وحفظ بياناتك:"
+        )
+        return SET_NICKNAME
+
+async def save_nickname(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    nickname = update.message.text.strip()
+    user_nicknames[user.id] = nickname
+    registered_players[user.id] = user
+
+    await update.message.reply_text(
+        f"✅ **تم حفظ لقبك بنجاح:** `{nickname}`\n\n"
+        f"سيتم إشعاراتك بكل البطولات والتفاصيل هنا عبر الخاص بانتظام.",
+        parse_mode="Markdown"
+    )
+    return ConversationHandler.END
+
+# ----------------------------------------------------
+# 4. لوحة بناء البطولة للمشرفين
+# ----------------------------------------------------
+async def tournament_builder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    if query.data == "create_tournament":
+        tournaments_db[user_id] = {
+            "mode": None, "squads": None, "map": None, 
+            "ammo": "YES", "gloo": "YES", "character": "YES", 
+            "pet": "YES", "airdrop": "YES", "vehicles": "YES", 
+            "time": "20:00", "registered": []
+        }
+        await show_main_builder_menu(query)
+
+    elif query.data == "set_mode_menu":
+        kb = [
+            [InlineKeyboardButton("كلاش سكواد (Clash Squad)", callback_data="mode_CS")],
+            [InlineKeyboardButton("باتل رويال (Battle Royale)", callback_data="mode_BR")]
+        ]
+        await query.edit_message_text("🎮 **اختر نوع الروم:**", reply_markup=InlineKeyboardMarkup(kb))
+
+    elif query.data.startswith("mode_"):
+        mode = "كلاش سكواد" if "CS" in query.data else "باتل رويال"
+        tournaments_db[user_id]["mode"] = mode
+        await show_main_builder_menu(query)
+
+    elif query.data == "set_squads_menu":
+        kb = []
+        for i in range(4, 11):
+            kb.append([InlineKeyboardButton(f"{i} سكوادات", callback_data=f"squads_{i}")])
+        await query.edit_message_text("👥 **حدد عدد السكوادات المشاركة:**", reply_markup=InlineKeyboardMarkup(kb))
+
+    elif query.data.startswith("squads_"):
+        count = int(query.data.split("_")[1])
+        tournaments_db[user_id]["squads"] = count
+        await show_main_builder_menu(query)
+
+    elif query.data == "set_map_menu":
+        kb = [
+            [InlineKeyboardButton("1. برمودا", callback_data="map_برمودا")],
+            [InlineKeyboardButton("2. كالاهاري", callback_data="map_كالاهاري")],
+            [InlineKeyboardButton("3. بيرغاتوري", callback_data="map_بيرغاتوري")],
+            [InlineKeyboardButton("4. نيكستيريا", callback_data="map_نيكستيريا")],
+            [InlineKeyboardButton("5. سولارا", callback_data="map_سولارا")]
+        ]
+        await query.edit_message_text("🗺️ **اختر خريطة الروم:**", reply_markup=InlineKeyboardMarkup(kb))
+
+    elif query.data.startswith("map_"):
+        map_name = query.data.split("_")[1]
+        tournaments_db[user_id]["map"] = map_name
+        await show_main_builder_menu(query)
+
+    elif query.data.startswith("toggle_"):
+        key = query.data.split("_")[1]
+        current = tournaments_db[user_id].get(key, "YES")
+        tournaments_db[user_id][key] = "NO" if current == "YES" else "YES"
+        await show_main_builder_menu(query)
+
+    elif query.data == "publish_tournament":
+        await publish_tournament_to_channel(query, context)
+
+async def show_main_builder_menu(query):
+    user_id = query.from_user.id
+    t = tournaments_db[user_id]
+
+    text = (
+        "⚙️ **إعداد معطيات روم البطولة الاحترافية:**\n\n"
+        f"• **نوع الروم:** {t['mode'] or 'غير محدد'}\n"
+        f"• **عدد السكوادات:** {t['squads'] or 'غير محدد'}\n"
+        f"• **الخريطة:** {t['map'] or 'غير محدد'}\n"
+        f"• **ذخيرة محدودة:** {t['ammo']} | **تلج محدود:** {t['gloo']}\n"
+        f"• **مهارة الشخصيات:** {t['character']} | **مهارة الحيوان:** {t['pet']}\n"
+        f"• **إنزال جوي:** {t['airdrop']} | **سيارات:** {t['vehicles']}\n"
+    )
+
+    kb = [
+        [InlineKeyboardButton("🎮 نوع الروم", callback_data="set_mode_menu")]
+    ]
+    if t["mode"] == "باتل رويال":
+        kb.append([InlineKeyboardButton("👥 عدد السكوادات", callback_data="set_squads_menu")])
+
+    kb.extend([
+        [InlineKeyboardButton("🗺️ خريطة الروم", callback_data="set_map_menu")],
+        [InlineKeyboardButton(f"ذخيرة محدودة: {t['ammo']}", callback_data="toggle_ammo")],
+        [InlineKeyboardButton(f"تلج محدود: {t['gloo']}", callback_data="toggle_gloo")],
+        [InlineKeyboardButton(f"مهارة الشخصيات: {t['character']}", callback_data="toggle_character")],
+        [InlineKeyboardButton(f"مهارة الحيوانات: {t['pet']}", callback_data="toggle_pet")],
+        [InlineKeyboardButton(f"الإنزال الجوي: {t['airdrop']}", callback_data="toggle_airdrop")],
+        [InlineKeyboardButton(f"سيارات: {t['vehicles']}", callback_data="toggle_vehicles")],
+        [InlineKeyboardButton("🚀 نشر البطولة الآن", callback_data="publish_tournament")]
+    ])
+
+    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+# ----------------------------------------------------
+# 5. نشر البطولة والإشعار العام
+# ----------------------------------------------------
+async def publish_tournament_to_channel(query, context: ContextTypes.DEFAULT_TYPE):
+    user = query.from_user
+    t = tournaments_db[user.id]
+
+    # حساب الحد الأقصى للاعبين
+    max_players = (t['squads'] * 4) if t['mode'] == "باتل رويال" and t['squads'] else 8
+
+    t_text = (
+        f"🏆 **بطولة E-SPORTS جديدة اعلنت رسمياً!** 🏆\n\n"
+        f"👤 **منظم البطولة:** @{user.username or user.first_name}\n"
+        f"🎮 **النمط:** {t['mode']}\n"
+        f"🗺️ **الخريطة:** {t['map']}\n\n"
+        f"📌 **شروط وإعدادات الروم:**\n"
+        f"• ذخيرة محدودة: {t['ammo']} | تلج محدود: {t['gloo']}\n"
+        f"• مهارة شخصيات: {t['character']} | مهارة حيوان: {t['pet']}\n"
+        f"• إنزال جوي: {t['airdrop']} | سيارات: {t['vehicles']}\n\n"
+        f"⏳ **المقاعد المتاحة:** {max_players} لاعب فقط لتجنب الاكتظاظ!"
+    )
+
+    kb = [[InlineKeyboardButton("📝 إضغط هنا للدخول والتسجيل", url=f"https://t.me/{context.bot.username}?start=register")]]
+    
+    # 1. نشر في القناة
+    await context.bot.send_message(
+        chat_id=CHANNEL_ID, 
+        text=t_text, 
+        parse_mode="Markdown", 
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+
+    # 2. إعادة النشر للجميع بالخاص (ما عدا المنظم)
+    broadcast_msg = (
+        f"📢 **بطولة جديدة تم إنشاؤها بواسطة @{user.username or user.first_name}!**\n\n"
+        f"سارع بالتسجيل الآن من خلال القناة قبل اكتمال العدد."
+    )
+    for p_id in registered_players:
+        if p_id != user.id:
             try:
-                # محاولة مسح الدفعة كاملة (وهذا يتطلب صلاحية مسح الرسائل للبوت)
-                bot.delete_messages(chat_id, batch)
-            except:
-                # إذا فشل المسح الجماعي، يتم مسحها واحدة تلو الأخرى
-                for m_id in batch:
-                    try: bot.delete_message(chat_id, m_id)
-                    except: pass
-            
-            # تحديث شريط التقدم كل 10%
-            progress = int((step / total_steps) * 100)
-            if progress % 10 == 0 or progress == 100:
-                filled = progress // 10
-                empty = 10 - filled
-                bar = "▓" * filled + "░" * empty
-                try:
-                    bot.edit_message_text(
-                        f"🧹 <b>جاري تنظيف رسائل المجموعة...</b>\n[{bar}] {progress}%", 
-                        chat_id, 
-                        status_msg.message_id, 
-                        parse_mode="HTML"
-                    )
-                except: pass
-                
-        # إكمال شريط التقدم وإنهاء العملية
-        try:
-            bot.edit_message_text(
-                "✅ <b>تم تنظيف المجموعة بالكامل بنجاح!</b>\n[▓▓▓▓▓▓▓▓▓▓] 100%", 
-                chat_id, 
-                status_msg.message_id, 
-                parse_mode="HTML"
-            )
-            # مسح رسالة إشعار النجاح بعد دقيقة
-            threading.Timer(60.0, delete_message_safe, args=(chat_id, status_msg.message_id)).start()
-        except: pass
+                await context.bot.send_message(chat_id=p_id, text=broadcast_msg, reply_markup=InlineKeyboardMarkup(kb))
+            except Exception:
+                pass
 
-    # استخدام Thread حتى لا يتوقف البوت أثناء المسح
-    threading.Thread(target=clear_history).start()
+    await query.edit_message_text("✅ **تم نشر البطولة بنجاح في القناة وتوجيه الإشعارات بالخاص!**")
 
+# ----------------------------------------------------
+# 6. التشغيل الرئيسي للبوت
+# ----------------------------------------------------
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-@bot.message_handler(commands=['unmute'])
-def owner_unmute_command(message):
-    chat_id, user_id = message.chat.id, message.from_user.id
-    if not is_admin(chat_id, user_id) and message.chat.type != 'private': return
-    
-    args = message.text.split()
-    target_id = None
-    
-    if message.reply_to_message:
-        target_id = message.reply_to_message.from_user.id
-    elif len(args) > 1:
-        if args[1].isdigit(): target_id = int(args[1])
-        elif args[1].startswith('@'): target_id = username_cache.get(args[1].lower())
-
-    if not target_id: return send_and_schedule(chat_id, "❌ لم أتمكن من التعرف على هذا العضو. تأكد من الرد عليه أو كتابة الآيدي/المعرف الصحيح.")
-
-    try:
-        # البحث عن أيدي الجروب إذا تم إرساله في الخاص
-        target_chat_id = chat_id if message.chat.type != 'private' else -1007454358135
-        bot.restrict_chat_member(target_chat_id, target_id, permissions=ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True))
-        if target_id in user_violations: user_violations[target_id] = 0
-        owner_name = html.escape(message.from_user.first_name)
-        send_and_schedule(target_chat_id, f"🔓 <b>عـفـو مـلـكـي / فَـك الـحَـظْـر !</b> 🔓\n\n✨ تم بفضل الله رفع عقوبة الميوت بناءً على عفو من المالك <b>{owner_name}</b>.", parse_mode="HTML")
-        send_and_schedule(chat_id, "✅ تم فك الميوت عن العضو بنجاح!")
-    except: send_and_schedule(chat_id, "❌ حدث خطأ، تأكد أن البوت يملك صلاحيات أو أنك أرسلت الأمر في المجموعة.")
-
-@bot.message_handler(commands=['ban', 'mute'])
-def admin_commands(message):
-    chat_id, user_id = message.chat.id, message.from_user.id
-    if not is_admin(chat_id, user_id): return
-    if not message.reply_to_message: return send_and_schedule(chat_id, "⚠️ يرجى الرد على رسالة الشخص.")
-
-    target_id = message.reply_to_message.from_user.id
-    target_name = message.reply_to_message.from_user.first_name
-
-    try:
-        if message.text.startswith('/ban'):
-            bot.ban_chat_member(chat_id, target_id)
-            send_and_schedule(chat_id, f"⛔ تم طرد <b>{html.escape(target_name)}</b> من المجموعة.", parse_mode="HTML")
-        elif message.text.startswith('/mute'):
-            bot.restrict_chat_member(chat_id, target_id, permissions=ChatPermissions(can_send_messages=False))
-            send_and_schedule(chat_id, f"🔇 تم كتم <b>{html.escape(target_name)}</b>.", parse_mode="HTML")
-    except: pass
-
-# ================= 3. ترحيب المالك والأعضاء =================
-@bot.message_handler(func=lambda m: m.chat.type == 'private' and m.from_user.id == OWNER_ID, commands=['start'])
-def welcome_owner_private(message):
-    send_and_schedule(message.chat.id, "👑 <b>أهلاً بك سيدي المالك!</b> يسعدني خدمتك دوماً.\nيمكنك إضافة التسريبات هنا مباشرة عبر أمر `/setnews` مع الصور.", parse_mode="HTML")
-
-@bot.message_handler(content_types=["new_chat_members"])
-def welcome_new_member(message):
-    for new_member in message.new_chat_members:
-        mention = f'<a href="tg://user?id={new_member.id}">{html.escape(new_member.first_name)}</a>'
-        send_and_schedule(message.chat.id, f"⚡ <b>أهلاً بك يا أسطورة</b> ⚡\n\n👤 <b>اللاعب:</b> {mention}\n\nاختر من القائمة أدناه لاكتشاف ميزات البوت 👇", parse_mode="HTML", reply_markup=create_main_menu())
-
-@bot.message_handler(commands=['help', 'start', 'menu'])
-def send_menu(message):
-    if message.chat.type == 'private' and message.from_user.id != OWNER_ID: return
-    send_and_schedule(message.chat.id, "🕹️ <b>قـائـمـة الـتـحـكـم الـرئـيـسـيـة</b> 🕹️\n\nاختر ما تريد من الأزرار أسفله:", parse_mode="HTML", reply_markup=create_main_menu())
-
-# ================= 4. الجلب التلقائي والتسريبات المتعددة =================
-@bot.channel_post_handler(func=lambda m: str(m.chat.id) == LEAKS_CHANNEL_ID)
-def auto_fetch_leaks(message):
-    global last_owner_leak_date
-    today = datetime.now().date()
-    if last_owner_leak_date != today:
-        leak = {"text": message.text or message.caption or "🔥 تسريب جديد!", "photo": message.photo[-1].file_id if message.photo else None}
-        saved_leaks.append(leak)
-        try: bot.send_message(OWNER_ID, f"🔔 <b>تم أخذ تسريب جديد تلقائياً من القناة!</b>\n📌 القناة: {message.chat.title}\n🆔 الأيدي: {message.chat.id}", parse_mode="HTML")
-        except: pass
-
-@bot.message_handler(commands=['setnews'], content_types=['text', 'photo'])
-def set_news_command(message):
-    if not is_admin(message.chat.id, message.from_user.id): return
-    global last_owner_leak_date
-    
-    leak_data = {"text": "🔥 تسريب جديد!", "photo": None}
-    
-    if message.reply_to_message:
-        reply_msg = message.reply_to_message
-        leak_data["photo"] = reply_msg.photo[-1].file_id if reply_msg.photo else None
-        leak_data["text"] = reply_msg.caption or reply_msg.text or leak_data["text"]
-    else:
-        leak_data["photo"] = message.photo[-1].file_id if message.photo else None
-        text = (message.caption or message.text).replace('/setnews', '').replace('setnews/', '').strip()
-        leak_data["text"] = text if text else leak_data["text"]
-
-    saved_leaks.append(leak_data)
-    last_owner_leak_date = datetime.now().date()
-    
-    send_and_schedule(message.chat.id, f"✅ تم حفظ التسريب بنجاح! (العدد الحالي: {len(saved_leaks)})")
-
-@bot.message_handler(commands=['news'])
-def send_all_news(message):
-    if not saved_leaks:
-        return send_and_schedule(message.chat.id, "لم يتم إضافة أي تسريبات بعد! 🕵️‍♂️")
-    
-    send_and_schedule(message.chat.id, "🔥 <b>إليكم أحدث التسريبات:</b>", parse_mode="HTML")
-    for leak in saved_leaks:
-        try:
-            if leak['photo']:
-                msg = bot.send_photo(message.chat.id, leak['photo'], caption=f"🕵️‍♂️ <b>تسريب</b> 🕵️‍♂️\n\n{html.escape(leak['text'])}", parse_mode="HTML")
-            else:
-                msg = bot.send_message(message.chat.id, f"🕵️‍♂️ <b>تسريب</b> 🕵️‍♂️\n\n{html.escape(leak['text'])}", parse_mode="HTML")
-            bot.pin_chat_message(message.chat.id, msg.message_id)
-        except: pass
-
-# ================= 5. استخراج ونشر الخرائط =================
-@bot.message_handler(content_types=["photo"])
-def handle_craftland_map(message):
-    if not message.caption: return
-    caption_lower = message.caption.lower()
-
-    if "/setnews" in caption_lower: return set_news_command(message)
-
-    if "/map" not in caption_lower:
-        send_and_schedule(message.chat.id, "⚠️ <b>خطأ!</b>\nلنشر خريطة، يجب أن تكتب `/map` في الوصف أولاً، ثم مسافة وتكتب الإسم والوصف والكود!", parse_mode="Markdown")
-        return
-
-    add_xp(message.from_user.id, message.from_user.first_name, 50)
-    
-    clean_caption = message.caption.replace("/map", "", 1).strip()
-    
-    map_type = "خريطة"
-    map_code = "غير متوفر"
-    lines = clean_caption.split('\n')
-    if lines: map_type = html.escape(lines[0].strip())
-    
-    code_match = re.search(r"(كود[:：]?\s*([A-Za-z0-9#\-_]+))", clean_caption, re.IGNORECASE)
-    hash_match = re.search(r"([A-Za-z0-9]*FREEFIRE[A-Za-z0-9#\-_]+)", clean_caption, re.IGNORECASE)
-    
-    if code_match:
-        map_code = html.escape(code_match.group(2).strip())
-        description_escaped = html.escape(clean_caption.replace(code_match.group(1), "").strip())
-    elif hash_match:
-        map_code = html.escape(hash_match.group(1).strip())
-        description_escaped = html.escape(clean_caption.replace(hash_match.group(1), "").strip())
-    else:
-        description_escaped = html.escape(clean_caption)
-
-    creator_name = html.escape(message.from_user.first_name)
-    base_caption = (
-        f"🏷️ <b>الخريطة:</b> {map_type}\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"📝 <b>الوصف:</b>\n{description_escaped}\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"🔑 <b>الكود:</b>\n<code>{map_code}</code>\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"👤 <b>بواسطة:</b> {creator_name}\n"
-        f"⭐ <b>التقييمات:</b> "
+    # Conversation Handler لخطوات التسجيل والتفاعل
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start_command)],
+        states={
+            SET_NICKNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_nickname)]
+        },
+        fallbacks=[]
     )
-    
-    try:
-        sent_msg = bot.send_photo(message.chat.id, message.photo[-1].file_id, caption=base_caption + "0.0/5 (0 أصوات)", parse_mode="HTML", reply_markup=create_rating_markup())
-        delete_message_safe(message.chat.id, message.message_id)
-        ratings_data[sent_msg.message_id] = {"base_text": base_caption, "votes": {}, "is_caption": True}
-    except: pass
 
-# ================= 6. الأزرار التفاعلية والأوامر الأخرى =================
-@bot.message_handler(commands=['squad'])
-def lfg_command(message):
-    request = message.text.replace("/squad", "").strip()
-    if not request: return
-    user_name = html.escape(message.from_user.first_name)
-    lfg_text = f"🎯 <b>طـلـب انـضـمـام</b> 🎯\n\n👤 <b>اللاعب:</b> {user_name}\n💬 <b>الطلب:</b> {html.escape(request)}"
-    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("💬 تواصل", url=f"tg://user?id={message.from_user.id}"))
-    send_and_schedule(message.chat.id, lfg_text, parse_mode="HTML", reply_markup=markup)
-    delete_message_safe(message.chat.id, message.message_id)
+    app.add_handler(conv_handler)
+    app.add_handler(CallbackQueryHandler(tournament_builder_callback))
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
 
-@bot.message_handler(commands=['tour'])
-def create_tournament(message):
-    if not is_admin(message.chat.id, message.from_user.id): return
-    tour_name = message.text.replace("/tour", "").strip() or "بطولة كلاش سكواد"
-    msg = send_and_schedule(
-        message.chat.id, 
-        f"🏆 <b>تـسـجـيـل الـبـطـولـة مـفـتـوح</b> 🏆\n\n⚔️ <b>البطولة:</b> {html.escape(tour_name)}\n👥 <b>المسجلين:</b> 0\n\nاضغط على الزر للتسجيل!", 
-        parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("✅ تسجيل", callback_data="tour_join")),
-        pin=True
-    )
-    if msg: tournaments[msg.message_id] = {"name": tour_name, "players": {}}
-    delete_message_safe(message.chat.id, message.message_id)
+    print("🤖 البوت يعمل الآن بنجاح...")
+    app.run_polling()
 
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callbacks(call):
-    chat_id, msg_id, user_id = call.message.chat.id, call.message.message_id, call.from_user.id
-
-    if call.data == "menu_squad":
-        send_and_schedule(chat_id, "للبحث عن فريق، اكتب أمر `/squad` متبوعاً بطلبك.\nمثال: `/squad رانك ماستر`", parse_mode="Markdown")
-        bot.answer_callback_query(call.id)
-        
-    elif call.data == "menu_news":
-        send_all_news(call.message)
-        bot.answer_callback_query(call.id)
-
-    elif call.data == "menu_top":
-        if not user_xp: return bot.answer_callback_query(call.id, "📊 لا يوجد تفاعل كافي بعد.", show_alert=True)
-        sorted_users = sorted(user_xp.items(), key=lambda x: x[1]['xp'], reverse=True)[:5]
-        top_text = "🏆 <b>أفـضـل 5 مـتـفـاعـلـيـن</b> 🏆\n\n"
-        medals = ["🥇", "🥈", "🥉", "🏅", "🏅"]
-        for i, (uid, data) in enumerate(sorted_users): top_text += f"{medals[i]} <b>{data['name']}</b> - {data['xp']} XP\n"
-        send_and_schedule(chat_id, top_text, parse_mode="HTML")
-        bot.answer_callback_query(call.id)
-
-    elif call.data == "admin_delete":
-        if is_admin(chat_id, user_id): delete_message_safe(chat_id, msg_id)
-        else: bot.answer_callback_query(call.id, "⚠️ هذا الزر للمشرفين فقط!", show_alert=True)
-
-    elif call.data == "tour_join":
-        if msg_id in tournaments:
-            tour = tournaments[msg_id]
-            if user_id not in tour["players"]:
-                tour["players"][user_id] = call.from_user.first_name
-                count = len(tour["players"])
-                bot.edit_message_text(text=f"🏆 <b>تـسـجـيـل الـبـطـولـة مـفـتـوح</b> 🏆\n\n⚔️ <b>البطولة:</b> {html.escape(tour['name'])}\n👥 <b>المسجلين:</b> {count}\n\nاضغط على الزر للتسجيل!", chat_id=chat_id, message_id=msg_id, parse_mode="HTML", reply_markup=call.message.reply_markup)
-                bot.answer_callback_query(call.id, "✅ تم تسجيلك بنجاح!")
-            else: bot.answer_callback_query(call.id, "⚠️ أنت مسجل مسبقاً!")
-
-    elif call.data.startswith("rate_"):
-        rating_val = int(call.data.split("_")[1])
-        if msg_id not in ratings_data: return bot.answer_callback_query(call.id, "⚠️ انتهت صلاحية التقييم!", show_alert=True)
-
-        data = ratings_data[msg_id]
-        data["votes"][user_id] = rating_val
-        votes, total_votes = data["votes"], len(data["votes"])
-        avg_rating = round(sum(votes.values()) / total_votes, 1)
-        updated_text = f"{data['base_text']}{avg_rating}/5 ({total_votes} أصوات)"
-
-        try:
-            if data["is_caption"]: bot.edit_message_caption(caption=updated_text, chat_id=chat_id, message_id=msg_id, parse_mode="HTML", reply_markup=call.message.reply_markup)
-            bot.answer_callback_query(call.id, f"✅ تم حفظ تقييمك: {rating_val} نجوم")
-        except: pass
-
-print("⚡ البوت المتطور يعمل الآن بميزات (المسح بالشريط / بدون حذف عند 30 / حذف للجميع)...")
-bot.infinity_polling()
+if __name__ == '__main__':
+    main()
