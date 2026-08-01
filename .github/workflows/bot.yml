@@ -33,4 +33,4 @@ jobs:
         
     - name: Start the Bot
       run: |
-        python boy.py
+        python bot.py
