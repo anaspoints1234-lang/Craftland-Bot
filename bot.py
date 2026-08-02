@@ -12,7 +12,7 @@ from aiogram.enums import ParseMode
 # ==========================================
 BOT_TOKEN = "8939977561:AAHAsc6CjAmX5Z17_vJrMRbLux8ItAsxIdc"
 CHANNEL_ID = -1003947857086  
-OWNER_USERNAME = "@its_me_zoro_2010" # يوزرنيم المالك الأساسي للتواصل
+OWNER_USERNAME = "its_me_zoro_2010" # يوزرنيم المالك الأساسي للتواصل
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -41,7 +41,7 @@ class TournamentCreationStates(StatesGroup):
     setting_pet_skill = State()
     setting_airdrop = State()
     setting_vehicles = State()
-    setting_organizer = State() # الخطوة الجديدة لإدخال اسم المنظم يدوياً
+    setting_organizer = State()
 
 # ==========================================
 # 4. دوال مساعدة لإنشاء الأزرار
@@ -57,12 +57,12 @@ def get_yes_no_kb():
 async def ask_setting(message_or_call, state: FSMContext, next_state: State, text: str):
     await state.set_state(next_state)
     kb = get_yes_no_kb()
-    msg_text = f"⚙️ **تخصيص الإعدادات:**\n\nهل ترغب في تفعيل **[ {text} ]**؟"
+    msg_text = f"⚙️ <b>تخصيص الإعدادات:</b>\n\nهل ترغب في تفعيل <b>[ {text} ]</b>؟"
     
     if isinstance(message_or_call, Message):
-        await message_or_call.answer(msg_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+        await message_or_call.answer(msg_text, reply_markup=kb, parse_mode=ParseMode.HTML)
     elif isinstance(message_or_call, CallbackQuery):
-        await message_or_call.message.edit_text(msg_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+        await message_or_call.message.edit_text(msg_text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 # ==========================================
 # 5. أمر البداية /start وأمر المساعدة /help
@@ -77,16 +77,16 @@ async def cmd_start(message: Message, state: FSMContext):
     
     welcome_text = (
         "✧ ─── ❖ ── ✦ ── ❖ ─── ✧\n"
-        "👑 **أهـلاً بـك فـي نـظـام الإدارة الاحـتـرافـي** 👑\n"
+        "👑 <b>أهـلاً بـك فـي نـظـام الإدارة الاحـتـرافـي</b> 👑\n"
         "✧ ─── ❖ ── ✦ ── ❖ ─── ✧\n\n"
         "أنا المساعد الذكي الخاص بك، مصمم خصيصاً للارتقاء بمستوى تنظيم الرومات والبطولات إلى أقصى درجات الاحترافية. 💎\n\n"
-        "📌 **مـاذا أقـدم لـك؟**\n"
+        "📌 <b>مـاذا أقـدم لـك؟</b>\n"
         "🏆 ↫ تنظيم بطولات متكاملة بضغطة زر.\n"
         "👥 ↫ إدارة تسجيل اللاعبين والفرق بسلاسة.\n"
         "📊 ↫ نشر إعلانات احترافية ومباشرة في قناتك.\n\n"
-        "👇🏻 **اخـتـر مـن الـقـائـمـة أدنـاه لـتـبـدأ رحـلـتـك:**"
+        "👇🏻 <b>اخـتـر مـن الـقـائـمـة أدنـاه لـتـبـدأ رحـلـتـك:</b>"
     )
-    await message.answer(welcome_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+    await message.answer(welcome_text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
@@ -94,10 +94,10 @@ async def cmd_help(message: Message):
         [InlineKeyboardButton(text="💬 للتواصل مع المالك لأي استفسار", url=f"https://t.me/{OWNER_USERNAME.replace('@', '')}")]
     ])
     help_text = (
-        "🛠️ **مـركـز المساعدة والدعم**\n\n"
+        "🛠️ <b>مـركـز المساعدة والدعم</b>\n\n"
         "إذا واجهتك أي مشكلة تقنية، أو كان لديك أي استفسار بخصوص تنظيم البطولات، يمكنك النقر على الزر أدناه للتواصل مباشرة مع مالك البوت وإدارته."
     )
-    await message.answer(help_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+    await message.answer(help_text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 # ==========================================
 # 6. خطوات إنشاء البطولة (الأسئلة النصية)
@@ -106,25 +106,25 @@ async def cmd_help(message: Message):
 async def start_tournament_creation(call: CallbackQuery, state: FSMContext):
     await call.answer()
     await state.set_state(TournamentCreationStates.setting_game_mode)
-    await call.message.edit_text("🎮 **الخطوة الأولى:**\nيرجى إرسال **نمط اللعب** الخاص بالبطولة (مثلاً: سكواد، دو، سولو):", parse_mode=ParseMode.MARKDOWN)
+    await call.message.edit_text("🎮 <b>الخطوة الأولى:</b>\nيرجى إرسال <b>نمط اللعب</b> الخاص بالبطولة (مثلاً: سكواد، دو، سولو):", parse_mode=ParseMode.HTML)
 
 @router.message(StateFilter(TournamentCreationStates.setting_game_mode))
 async def get_game_mode(message: Message, state: FSMContext):
     await state.update_data(game_mode=message.text)
     await state.set_state(TournamentCreationStates.setting_max_players)
-    await message.answer("👥 **الخطوة الثانية:**\nيرجى إرسال **الحد الأقصى للاعبين** (أرقام فقط):", parse_mode=ParseMode.MARKDOWN)
+    await message.answer("👥 <b>الخطوة الثانية:</b>\nيرجى إرسال <b>الحد الأقصى للاعبين</b> (أرقام فقط):", parse_mode=ParseMode.HTML)
 
 @router.message(StateFilter(TournamentCreationStates.setting_max_players))
 async def get_max_players(message: Message, state: FSMContext):
     await state.update_data(max_players=message.text)
     await state.set_state(TournamentCreationStates.setting_map_name)
-    await message.answer("🗺️ **الخطوة الثالثة:**\nيرجى تحديد **اسم الخريطة** التي ستُلعب عليها البطولة:", parse_mode=ParseMode.MARKDOWN)
+    await message.answer("🗺️ <b>الخطوة الثالثة:</b>\nيرجى تحديد <b>اسم الخريطة</b> التي ستُلعب عليها البطولة:", parse_mode=ParseMode.HTML)
 
 @router.message(StateFilter(TournamentCreationStates.setting_map_name))
 async def get_map_name(message: Message, state: FSMContext):
     await state.update_data(map_name=message.text)
     await state.set_state(TournamentCreationStates.setting_start_time)
-    await message.answer("⏰ **الخطوة الرابعة:**\nيرجى إرسال **توقيت انطلاق البطولة** (مثال: 22:00 بتوقيت المغرب):", parse_mode=ParseMode.MARKDOWN)
+    await message.answer("⏰ <b>الخطوة الرابعة:</b>\nيرجى إرسال <b>توقيت انطلاق البطولة</b> (مثال: 22:00 بتوقيت المغرب):", parse_mode=ParseMode.HTML)
 
 # ==========================================
 # 7. خطوات الإعدادات (أزرار تفعيل / إلغاء)
@@ -164,18 +164,16 @@ async def set_airdrop(call: CallbackQuery, state: FSMContext):
     await state.update_data(airdrop=call.data.split("_")[1])
     await ask_setting(call, state, TournamentCreationStates.setting_vehicles, "السيارات")
 
-# المرحلة الأخيرة من الأزرار: الانتقال لطلب اسم القائد يدوياً
 @router.callback_query(StateFilter(TournamentCreationStates.setting_vehicles), F.data.startswith("set_"))
 async def set_vehicles(call: CallbackQuery, state: FSMContext):
     await call.answer()
     await state.update_data(vehicles=call.data.split("_")[1])
     
-    # الانتقال لحالة طلب اسم المنظم/القائد من المستخدم
     await state.set_state(TournamentCreationStates.setting_organizer)
     await call.message.edit_text(
-        "👑 **الخطوة الأخيرة:**\n\n"
-        "الرجاء إرسال **اسم القائد أو المنظم** بالطريقة الصحيحة (مثلاً: `its_me_zoro_2010` أو الاسم الذي تريد أن يظهر في الإعلان):",
-        parse_mode=ParseMode.MARKDOWN
+        "👑 <b>الخطوة الأخيرة:</b>\n\n"
+        "الرجاء إرسال <b>اسم القائد أو المنظم</b> (مثلاً: <code>its_me_zoro_2010</code>):",
+        parse_mode=ParseMode.HTML
     )
 
 # ==========================================
@@ -183,11 +181,10 @@ async def set_vehicles(call: CallbackQuery, state: FSMContext):
 # ==========================================
 @router.message(StateFilter(TournamentCreationStates.setting_organizer))
 async def finalize_tournament(message: Message, state: FSMContext):
-    custom_organizer = message.text.strip()
-    # إذا لم يبدأ الاسم بـ @، نضيفها تلقائياً لاحترافية الشكل
-    if not custom_organizer.startswith("@"):
-        custom_organizer = f"@{custom_organizer}"
-        
+    raw_organizer = message.text.strip().replace("@", "")
+    # الحفاظ على الرموز بفضل HTML والوسم <code> أو بصيغة نصية عادية مضبوطة
+    custom_organizer = f"@{raw_organizer}"
+    
     await state.update_data(organizer_name=custom_organizer)
     
     data = await state.get_data()
@@ -201,22 +198,22 @@ async def finalize_tournament(message: Message, state: FSMContext):
     tournaments_db[tour_id] = data
     active_registrations[tour_id] = []
 
-    # صياغة إعلان البطولة باستخدام الاسم الذي أدخله المنظم يدوياً
+    # صياغة إعلان البطولة باستخدام HTML باش علامة الشرطة السفلية _ متمسحش نهائياً
     announce_text = (
         f"✧ ─── ❖ ── ✦ ── ❖ ─── ✧\n"
-        f"🏆 **إعــلان عــن بـطـولـة جـديـدة [ #{tour_id} ]** 🏆\n"
+        f"🏆 <b>إعــلان عــن بـطـولـة جـديـدة [ #{tour_id} ]</b> 🏆\n"
         f"✧ ─── ❖ ── ✦ ── ❖ ─── ✧\n\n"
-        f"⚔️ **نـظـام الـلـعـب:** {data.get('game_mode', 'غير محدد')}\n"
-        f"👥 **الـعـدد الأقـصـى:** {data.get('max_players', 'غير محدد')} لاعب\n"
-        f"🗺️ **الـخـريـطـة:** {data.get('map_name', 'غير محدد')}\n"
-        f"⏰ **تـوقـيـت الانـطـلاق:** {data.get('start_time', 'غير محدد')}\n\n"
-        f"⚙️ **شــروط وإعــدادات الـمـبـاراة:**\n"
+        f"⚔️ <b>نـظـام الـلـعـب:</b> {data.get('game_mode', 'غير محدد')}\n"
+        f"👥 <b>الـعـدد الأقـصـى:</b> {data.get('max_players', 'غير محدد')} لاعب\n"
+        f"🗺️ <b>الـخـريـطـة:</b> {data.get('map_name', 'غير محدد')}\n"
+        f"⏰ <b>تـوقـيـت الانـطـلاق:</b> {data.get('start_time', 'غير محدد')}\n\n"
+        f"⚙️ <b>شــروط وإعــدادات الـمـبـاراة:</b>\n"
         f"🔸 ذخيرة محدودة: {data.get('ammo', 'NO')} | ثلج محدود: {data.get('gloowall', 'NO')}\n"
         f"🔸 مهارة شخصيات: {data.get('char_skill', 'YES')} | مهارة حيوان: {data.get('pet_skill', 'YES')}\n"
         f"🔸 دروب جوي: {data.get('airdrop', 'YES')} | سيارات: {data.get('vehicles', 'NO')}\n\n"
-        f"👑 **تـنـظـيـم الـقـائـد:** {data['organizer_name']}\n"
-        f"💬 **للاستفسار وتواصل مع المالك:** {OWNER_USERNAME}\n\n"
-        f"⚠️ **المقاعد محدودة، سارع بحجز مكانك الآن!** 🚀"
+        f"👑 <b>تنظيم القائد:</b> <code>{data['organizer_name']}</code>\n"
+        f"💬 <b>للاستفسار وتواصل مع المالك:</b> <code>@{OWNER_USERNAME.replace('@', '')}</code>\n\n"
+        f"⚠️ <b>المقاعد محدودة، سارع بحجز مكانك الآن!</b> 🚀"
     )
 
     kb = InlineKeyboardMarkup(
@@ -226,25 +223,24 @@ async def finalize_tournament(message: Message, state: FSMContext):
     )
 
     try:
-        # نشر في القناة
         msg = await bot.send_message(
             chat_id=CHANNEL_ID,
             text=announce_text,
-            parse_mode=ParseMode.MARKDOWN,
+            parse_mode=ParseMode.HTML,
             reply_markup=kb,
         )
         tournaments_db[tour_id]["channel_msg_id"] = msg.message_id
 
         await message.answer(
-            f"✅ **تـمـت الـعـمـلـيـة بـنـجـاح!** 💎\n\n"
-            f"تم إنشاء البطولة ونشر الإعلان الرسمي في القناة بالاسم الذي حددته.\n"
+            f"✅ <b>تـمـت الـعـمـلـيـة بـنـجـاح!</b> 💎\n\n"
+            f"تم إنشاء البطولة ونشر الإعلان الرسمي في القناة بالاسم الصحيح وبدون نقصان.\n"
             f"(معرف البطولة: #{tour_id})",
-            parse_mode=ParseMode.MARKDOWN
+            parseMode=ParseMode.HTML
         )
     except Exception as e:
         await message.answer(
-            f"⚠️ **عذراً، حدث خطأ أثناء النشر:**\nتم حفظ الإعدادات، لكن لم أتمكن من إرسال الإعلان للقناة.\nالمرجو التأكد أن البوت **مشرف (Admin)** ويمتلك صلاحيات النشر.\n\nتفاصيل الخطأ: {e}",
-            parse_mode=ParseMode.MARKDOWN
+            f"⚠️ <b>عذراً، حدث خطأ أثناء النشر:</b>\n{e}",
+            parse_mode=ParseMode.HTML
         )
 
 # ==========================================
