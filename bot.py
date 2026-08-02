@@ -2,7 +2,7 @@ import asyncio
 import logging
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import CommandStart, StateFilter
+from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.enums import ParseMode
@@ -12,8 +12,7 @@ from aiogram.enums import ParseMode
 # ==========================================
 BOT_TOKEN = "8939977561:AAHAsc6CjAmX5Z17_vJrMRbLux8ItAsxIdc"
 CHANNEL_ID = -1003947857086  
-OWNER_USERNAME = "https://t.me/its_me_zoro_2010" # ⚠️ حط اليوزرنيم ديالك هنا
-BOT_USERNAME = "https://t.me/anas_craftland_bot" # ⚠️ بدل هادي باليوزرنيم الجديد ديال البوت يلا بدلتيه
+OWNER_USERNAME = "@its_me_zoro_2010" # يوزرنيم المالك الأساسي للتواصل
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -42,6 +41,7 @@ class TournamentCreationStates(StatesGroup):
     setting_pet_skill = State()
     setting_airdrop = State()
     setting_vehicles = State()
+    setting_organizer = State() # الخطوة الجديدة لإدخال اسم المنظم يدوياً
 
 # ==========================================
 # 4. دوال مساعدة لإنشاء الأزرار
@@ -65,14 +65,14 @@ async def ask_setting(message_or_call, state: FSMContext, next_state: State, tex
         await message_or_call.message.edit_text(msg_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
 
 # ==========================================
-# 5. أمر البداية /start
+# 5. أمر البداية /start وأمر المساعدة /help
 # ==========================================
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🏆 بدء إعداد بطولة جديدة", callback_data="create_tour")],
-        [InlineKeyboardButton(text="💬 تواصل مع الدعم والإدارة", url=f"https://t.me/{OWNER_USERNAME.replace('@', '')}")]
+        [InlineKeyboardButton(text="💬 للتواصل مع المالك لأي استفسار", url=f"https://t.me/{OWNER_USERNAME.replace('@', '')}")]
     ])
     
     welcome_text = (
@@ -87,6 +87,17 @@ async def cmd_start(message: Message, state: FSMContext):
         "👇🏻 **اخـتـر مـن الـقـائـمـة أدنـاه لـتـبـدأ رحـلـتـك:**"
     )
     await message.answer(welcome_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 للتواصل مع المالك لأي استفسار", url=f"https://t.me/{OWNER_USERNAME.replace('@', '')}")]
+    ])
+    help_text = (
+        "🛠️ **مـركـز المساعدة والدعم**\n\n"
+        "إذا واجهتك أي مشكلة تقنية، أو كان لديك أي استفسار بخصوص تنظيم البطولات، يمكنك النقر على الزر أدناه للتواصل مباشرة مع مالك البوت وإدارته."
+    )
+    await message.answer(help_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
 
 # ==========================================
 # 6. خطوات إنشاء البطولة (الأسئلة النصية)
@@ -116,7 +127,7 @@ async def get_map_name(message: Message, state: FSMContext):
     await message.answer("⏰ **الخطوة الرابعة:**\nيرجى إرسال **توقيت انطلاق البطولة** (مثال: 22:00 بتوقيت المغرب):", parse_mode=ParseMode.MARKDOWN)
 
 # ==========================================
-# 7. خطوات الإعدادات (أزرار YES / NO)
+# 7. خطوات الإعدادات (أزرار تفعيل / إلغاء)
 # ==========================================
 @router.message(StateFilter(TournamentCreationStates.setting_start_time))
 async def get_start_time(message: Message, state: FSMContext):
@@ -153,13 +164,31 @@ async def set_airdrop(call: CallbackQuery, state: FSMContext):
     await state.update_data(airdrop=call.data.split("_")[1])
     await ask_setting(call, state, TournamentCreationStates.setting_vehicles, "السيارات")
 
-# ==========================================
-# 8. حفظ البطولة ونشرها في القناة
-# ==========================================
+# المرحلة الأخيرة من الأزرار: الانتقال لطلب اسم القائد يدوياً
 @router.callback_query(StateFilter(TournamentCreationStates.setting_vehicles), F.data.startswith("set_"))
-async def finalize_tournament(call: CallbackQuery, state: FSMContext):
-    await call.answer() 
+async def set_vehicles(call: CallbackQuery, state: FSMContext):
+    await call.answer()
     await state.update_data(vehicles=call.data.split("_")[1])
+    
+    # الانتقال لحالة طلب اسم المنظم/القائد من المستخدم
+    await state.set_state(TournamentCreationStates.setting_organizer)
+    await call.message.edit_text(
+        "👑 **الخطوة الأخيرة:**\n\n"
+        "الرجاء إرسال **اسم القائد أو المنظم** بالطريقة الصحيحة (مثلاً: `its_me_zoro_2010` أو الاسم الذي تريد أن يظهر في الإعلان):",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# ==========================================
+# 8. استقبال اسم المنظم، حفظ البطولة ونشرها في القناة
+# ==========================================
+@router.message(StateFilter(TournamentCreationStates.setting_organizer))
+async def finalize_tournament(message: Message, state: FSMContext):
+    custom_organizer = message.text.strip()
+    # إذا لم يبدأ الاسم بـ @، نضيفها تلقائياً لاحترافية الشكل
+    if not custom_organizer.startswith("@"):
+        custom_organizer = f"@{custom_organizer}"
+        
+    await state.update_data(organizer_name=custom_organizer)
     
     data = await state.get_data()
     await state.clear()
@@ -168,12 +197,11 @@ async def finalize_tournament(call: CallbackQuery, state: FSMContext):
     tournament_counter += 1
     tour_id = tournament_counter
 
-    data["organizer_id"] = call.from_user.id
-    data["organizer_name"] = call.from_user.username or call.from_user.first_name
+    data["organizer_id"] = message.from_user.id
     tournaments_db[tour_id] = data
     active_registrations[tour_id] = []
 
-    # صياغة إعلان البطولة الفخم
+    # صياغة إعلان البطولة باستخدام الاسم الذي أدخله المنظم يدوياً
     announce_text = (
         f"✧ ─── ❖ ── ✦ ── ❖ ─── ✧\n"
         f"🏆 **إعــلان عــن بـطـولـة جـديـدة [ #{tour_id} ]** 🏆\n"
@@ -186,9 +214,8 @@ async def finalize_tournament(call: CallbackQuery, state: FSMContext):
         f"🔸 ذخيرة محدودة: {data.get('ammo', 'NO')} | ثلج محدود: {data.get('gloowall', 'NO')}\n"
         f"🔸 مهارة شخصيات: {data.get('char_skill', 'YES')} | مهارة حيوان: {data.get('pet_skill', 'YES')}\n"
         f"🔸 دروب جوي: {data.get('airdrop', 'YES')} | سيارات: {data.get('vehicles', 'NO')}\n\n"
-        f"👑 **تـنـظـيـم الـقـائـد:** @{data['organizer_name']}\n"
-        f"💬 **للاستفسار والتواصل:** {OWNER_USERNAME}\n"
-        f"🤖 **للتسجيل الآلي عبر البوت:** {BOT_USERNAME}\n\n"
+        f"👑 **تـنـظـيـم الـقـائـد:** {data['organizer_name']}\n"
+        f"💬 **للاستفسار وتواصل مع المالك:** {OWNER_USERNAME}\n\n"
         f"⚠️ **المقاعد محدودة، سارع بحجز مكانك الآن!** 🚀"
     )
 
@@ -208,14 +235,14 @@ async def finalize_tournament(call: CallbackQuery, state: FSMContext):
         )
         tournaments_db[tour_id]["channel_msg_id"] = msg.message_id
 
-        await call.message.edit_text(
+        await message.answer(
             f"✅ **تـمـت الـعـمـلـيـة بـنـجـاح!** 💎\n\n"
-            f"تم إنشاء البطولة وإرسال الإعلان الرسمي إلى القناة المحددة.\n"
+            f"تم إنشاء البطولة ونشر الإعلان الرسمي في القناة بالاسم الذي حددته.\n"
             f"(معرف البطولة: #{tour_id})",
             parse_mode=ParseMode.MARKDOWN
         )
     except Exception as e:
-        await call.message.edit_text(
+        await message.answer(
             f"⚠️ **عذراً، حدث خطأ أثناء النشر:**\nتم حفظ الإعدادات، لكن لم أتمكن من إرسال الإعلان للقناة.\nالمرجو التأكد أن البوت **مشرف (Admin)** ويمتلك صلاحيات النشر.\n\nتفاصيل الخطأ: {e}",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -237,7 +264,6 @@ async def register_player(call: CallbackQuery):
         await call.answer("⚠️ لقد قمت بالتسجيل مسبقاً في هذه البطولة!", show_alert=True)
     else:
         active_registrations[tour_id].append(player_id)
-        # رسالة تأكيد فخمة للمستخدم
         await call.answer("✅ تم تأكيد تسجيلك بنجاح! استعد للمنافسة وحظاً موفقاً. 🏆", show_alert=True)
 
 # ==========================================
@@ -251,4 +277,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
