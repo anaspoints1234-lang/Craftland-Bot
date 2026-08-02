@@ -12,8 +12,8 @@ from aiogram.enums import ParseMode
 # ==========================================
 BOT_TOKEN = "8939977561:AAHAsc6CjAmX5Z17_vJrMRbLux8ItAsxIdc"
 CHANNEL_ID = -1003947857086  
-OWNER_USERNAME = "@an_as1209" # ⚠️ حط اليوزرنيم ديالك هنا
-BOT_USERNAME = "@anas_craftland_bot" # ⚠️ بدل هادي باليوزرنيم الجديد ديال البوت يلا بدلتيه
+OWNER_USERNAME = "https://t.me/its_me_zoro_2010" # ⚠️ حط اليوزرنيم ديالك هنا
+BOT_USERNAME = "https://t.me/anas_craftland_bot" # ⚠️ بدل هادي باليوزرنيم الجديد ديال البوت يلا بدلتيه
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
