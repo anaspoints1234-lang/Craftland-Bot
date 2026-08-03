@@ -1,12 +1,12 @@
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 
-// التوكنات محمية باش ما يتسرقوش من GitHub
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const FREEFIRE_TOKEN = process.env.FREEFIRE_TOKEN;
+// التوكنات محطوطين مباشرة (تأكد أن المستودع Private ⚠️)
+const TELEGRAM_TOKEN = '8939977561:AAHAsc6CjAmX5Z17_vJrMRbLux8ItAsxIdc';
+const FREEFIRE_TOKEN = '37B2ED826DC15628FE84C236D40C221437227B8055FDA78D9C3BA01427C1F944';
 
 // إعدادات البانرات والشعار
-const BANNERS = ['902000018']; // تقدر تزيد بانرات أخرى هنا يلا بغيتي
+const BANNERS = ['902000018']; 
 const EMOTE_CODE = '909000002';
 const CROWN_ICONS = ['904990069', '902049014'];
 
@@ -21,7 +21,7 @@ function getRandomBanner() {
 
 async function sendFriendRequest(targetUID) {
     try {
-        const response = await axios.post('https://client.freefiremobile.com/AddFriend', {
+        await axios.post('https://client.freefiremobile.com/AddFriend', {
             target_uid: targetUID
         }, {
             headers: {
@@ -83,8 +83,7 @@ bot.onText(/\/add (.+)/, async (msg, match) => {
 });
 
 // ==========================================
-// محاكاة أوامر اللعبة (In-Game Chat Engine)
-// هاد الجزء كيتنفذ ملي البوت كيقرا رسالة فـ اللعبة
+// محاكاة أوامر اللعبة
 // ==========================================
 function handleInGameCommand(playerUID, commandText) {
     const args = commandText.split(" ");
